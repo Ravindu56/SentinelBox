@@ -30,7 +30,8 @@
 #define PIN_LED_R       7
 #define PIN_LED_G       8
 #define PIN_LED_B       9
-#define SD_CS_PIN       10
+#define SD_CS_PIN_MEGA       53
+#define SD_CS_PIN_UNO      10
 #define PIN_BTN_PANIC   A3
 #define PIN_WATER       A0
 #define PIN_MQ2         A1
@@ -38,7 +39,9 @@
 #define PIN_BATTERY     A6    // voltage divider: 33k/10k → battery+
 #define PIN_TP_CHRG     A7    // TP4056 CHRG pin (LOW = charging)
 #define SIM_RX          2     // ATmega RX from SIM800L TX
-#define SIM_TX          3     // ATmega TX to SIM800L RX (via divider)
+#define SIM_TX          3  
+
+#define SD_CS_PIN       SD_CS_PIN_MEGA  // ATmega TX to SIM800L RX (via divider)
 
 // Note: Mega has A6/A7 as ADC-only — same as ATmega328P TQFP
 // For 28-pin DIP ATmega328P, use A4/A5 instead for battery/chrg

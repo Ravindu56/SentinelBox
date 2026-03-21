@@ -80,7 +80,7 @@ void setup() {
     }
 
     // GSM: skip blocking init here — deferred to loop()
-    DBGLN(F("[GSM]  init deferred"));
+    DBGLN(F("[GSM]  on ESP32 node"));
     DBGLN(F("[BOOT] Complete\n"));
 
     // Enable WDT now — setup is done in ~200ms

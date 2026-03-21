@@ -1,33 +1,29 @@
-// uno_link.h — UART1 link between ESP32 and ATmega
-// GPIO4=RX, GPIO5=TX  (add voltage divider on ATmega TX → ESP32 RX)
+// uno_link.h
 #pragma once
 #include <Arduino.h>
-#include "gps_parser.h"
 #include "../../include/config.h"
+#include "gps_parser.h"
 
-// Parsed telemetry from ATmega
 struct TelData {
-  char     ts[20];
-  float    tempC;
-  float    humidity;
-  int      water, mq2, flame;
-  uint8_t  vib;
-  bool     panic;
-  uint8_t  flags;
-  float    battV;
-  char     battSt[10];
-  bool     fresh;    // true when new data received this tick
+  char    ts[20];       // "2026-03-22 00:53:06"
+  float   tempC;
+  float   humidity;
+  int     water;
+  int     mq2;
+  int     flame;
+  uint8_t vib;
+  uint8_t panic;
+  uint8_t flags;
+  float   battV;
+  char    battSt[12];   // "FULL" / "ON_BATT" / "CHARGING" / "LOW_BATT"
+  bool    fresh;        // true for exactly one loop() after new TEL received
 };
 
 namespace UnoLink {
-  void init();
-  void tick();                     // receive from ATmega; call every loop
-
-  // Send GPS to ATmega (call periodically)
-  void sendGPS();
-
-  const TelData& telemetry();      // last parsed telemetry
-  // Last event string (empty if none since last call)
-  const char*    lastEvent();
-  void           clearEvent();
+  void            init();
+  void            tick();
+  void            sendGPS();
+  const TelData&  telemetry();
+  const char*     lastEvent();
+  void            clearEvent();
 }

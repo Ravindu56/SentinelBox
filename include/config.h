@@ -20,6 +20,7 @@
 #define MQTT_TOPIC_TEL "blackbox/telemetry"
 #define MQTT_TOPIC_EVT "blackbox/event"
 #define MQTT_TOPIC_CMD "blackbox/cmd"
+#define VOLTAGE_DIVIDER_RATIO 4.3f
 
 // ── ATmega pin map ────────────────────────────────────────────────
 // These Arduino pin numbers work on BOTH Mega and ATmega328P
@@ -31,7 +32,7 @@
 #define PIN_LED_G       8
 #define PIN_LED_B       9
 #define SD_CS_PIN_MEGA       53
-#define SD_CS_PIN_UNO      10
+#define SD_CS_PIN_UNO      10    // Uno SD CS pin (also used for SIM800L on Mega)
 #define PIN_BTN_PANIC   A3
 #define PIN_WATER       A0
 #define PIN_MQ2         A1

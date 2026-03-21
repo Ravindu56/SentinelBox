@@ -37,9 +37,19 @@
 #define PIN_MQ2         A1
 #define PIN_FLAME       A2
 #define PIN_BATTERY     A6    // voltage divider: 33k/10k → battery+
-#define PIN_TP_CHRG     A7    // TP4056 CHRG pin (LOW = charging)
-#define SIM_RX          2     // ATmega RX from SIM800L TX
-#define SIM_TX          3  
+#define PIN_TP_CHRG     A7  
+
+// ── SIM800L serial ────────────────────────────────────────────────
+#ifdef TARGET_MEGA
+  // Mega: Hardware UART1 — no SoftwareSerial, no disconnect needed
+  #define SIM_USE_SERIAL1
+  #define SIM_RX   19    // Mega RX1 ← SIM800L EVB TXD (direct)
+  #define SIM_TX   18    // Mega TX1 → 10kΩ/20kΩ divider → EVB RXD
+#else
+  // ATmega328P production: SoftwareSerial on D2/D3
+  #define SIM_RX    2    // 328P RX ← SIM800L TX
+  #define SIM_TX    3    // 328P TX → divider → SIM800L RX
+#endif
 
 #define SD_CS_PIN       SD_CS_PIN_MEGA  // ATmega TX to SIM800L RX (via divider)
 

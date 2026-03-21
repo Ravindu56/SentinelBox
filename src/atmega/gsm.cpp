@@ -1,4 +1,5 @@
 #include "gsm.h"
+#include <avr/wdt.h>
 
 // ── Serial backend — Serial1 on Mega, SoftwareSerial on 328P ─────────
 #ifdef SIM_USE_SERIAL1
@@ -20,6 +21,7 @@ static uint8_t _rxIdx = 0;
 
 static bool _tryBaud(uint32_t baud) {
     _simEnd();
+    wdt_reset();
     delay(50);
     _simBegin(baud);
     delay(200);

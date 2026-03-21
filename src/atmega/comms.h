@@ -7,6 +7,7 @@
 #pragma once
 #include <Arduino.h>
 #include "sensors.h"
+#include <avr/wdt.h>
 
 namespace Comms {
   void init();    // call in setup()

@@ -9,8 +9,8 @@
 #define SMS_NUMBER_2   "+94XXXXXXXXX"
 
 // ── WiFi (ESP32) ──────────────────────────────────────────────────
-#define WIFI_SSID      "YOUR_SSID"
-#define WIFI_PASS      "YOUR_PASSWORD"
+#define WIFI_SSID      "Dialog 4G 720"
+#define WIFI_PASS      "82601557"
 #define AP_SSID        "BlackBox-AP"
 #define AP_PASS        "blackbox123"
 
@@ -40,17 +40,6 @@
 #define PIN_BATTERY     A6    // voltage divider: 33k/10k → battery+
 #define PIN_TP_CHRG     A7  
 
-// ── SIM800L serial ────────────────────────────────────────────────
-#ifdef TARGET_MEGA
-  // Mega: Hardware UART1 — no SoftwareSerial, no disconnect needed
-  #define SIM_USE_SERIAL1
-  #define SIM_RX   19    // Mega RX1 ← SIM800L EVB TXD (direct)
-  #define SIM_TX   18    // Mega TX1 → 10kΩ/20kΩ divider → EVB RXD
-#else
-  // ATmega328P production: SoftwareSerial on D2/D3
-  #define SIM_RX    2    // 328P RX ← SIM800L TX
-  #define SIM_TX    3    // 328P TX → divider → SIM800L RX
-#endif
 
 #define SD_CS_PIN       SD_CS_PIN_MEGA  // ATmega TX to SIM800L RX (via divider)
 

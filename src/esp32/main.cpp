@@ -26,6 +26,7 @@
 static unsigned long _lastDashPush  = 0;
 static unsigned long _lastHeartbeat = 0;
 static unsigned long _lastSmsSent   = 0;
+static bool _gsmInitDone = false;
 
 // ── MQTT incoming command callback ───────────────────────────────────
 void onMqttMessage(char *topic, byte *payload, unsigned int len) {
@@ -66,7 +67,7 @@ void setup() {
 
   GpsParser::init();    // UART2: GPIO16/17 — NEO-6M GPS @ 9600
   UnoLink::init();      // UART1: GPIO4/5   — ATmega link @ 115200
-  GsmNode::init();      // UART0: GPIO26/27 — SIM800L GSM @ 9600
+  // GsmNode::init();      // UART0: GPIO26/27 — SIM800L GSM @ 9600
   WifiMqtt::init();
   WifiMqtt::setCallback(onMqttMessage);
   WebDash::init();
@@ -89,6 +90,13 @@ void setup() {
 //  LOOP
 // ─────────────────────────────────────────────────────────────────────
 void loop() {
+    if (!_gsmInitDone && millis() >= 3000UL) {
+      _gsmInitDone = true;
+      GsmNode::init();
+      Serial.printf("[GSM]  %s\n",
+          GsmNode::available() ? "Ready" : "Not connected — SMS disabled");
+  }
+
   // ── Non-blocking ticks ────────────────────────────────────────────
   GpsParser::tick();
   UnoLink::tick();

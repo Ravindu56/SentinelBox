@@ -1,23 +1,6 @@
 // =====================================================================
 // main.cpp — ATmega328P / Mega2560 Main Controller
 // Disaster-Proof BlackBox  |  EC6020 Embedded Systems Design
-//
-// Compiles for BOTH Mega (testing) and ATmega328P (production):
-//   pio run -e mega          → Mega2560
-//   pio run -e atmega328p    → Bare ATmega328P chip
-//
-// Modules:
-//   sensors   — DHT22, water, MQ-2, flame, vibration, panic
-//   hazards   — bitmask detection + text conversion
-//   rtc_time  — DS3231 timestamps
-//   storage   — Micro SD CSV logging (no EEPROM)
-//   gsm       — SIM800L SMS + heartbeat
-//   leds      — RGB LED + buzzer state machine
-//   comms     — ATmega↔ESP32 serial protocol
-//   power     — battery ADC, TP4056, watchdog, sleep
-//
-// millis()-based scheduling — NO blocking delay() in main loop.
-// PROGMEM / F() macros used throughout to minimise SRAM usage.
 // =====================================================================
 #include <Arduino.h>
 #include <Wire.h>
@@ -37,11 +20,11 @@
 static unsigned long _lastLog       = 0;
 static unsigned long _lastSms       = 0;
 static unsigned long _lastHeartbeat = 0;
-static unsigned long _lastGsmRetry  = 0;
+// _lastGsmRetry removed — GSM is on ESP32 node
 
 // ── State ─────────────────────────────────────────────────────────────
 static uint8_t _prevFlags   = 0xFF;
-static bool    _gsmInitDone = false;   // ← deferred GSM flag
+static bool    _gsmInitDone = false;
 static char    _ts[20];
 static char    _battSt[10];
 static char    _flagTxt[64];
@@ -55,11 +38,10 @@ static char    _flagTxt[64];
 #endif
 
 // ─────────────────────────────────────────────────────────────────────
-// SETUP — must finish in < WDT timeout (8s)
-// NO blocking calls here — GSM init is deferred to loop()
+// SETUP
 // ─────────────────────────────────────────────────────────────────────
 void setup() {
-    wdt_disable();   // prevent reset during init
+    wdt_disable();
 
     Wire.begin();
     Leds::init();
@@ -69,8 +51,13 @@ void setup() {
     DBGLN(F("  Disaster BlackBox — booting"));
     DBGLN(F("============================================="));
 
-    RtcTime::init()  ? DBGLN(F("[RTC]  OK")) : DBGLN(F("[RTC]  FAIL"));
-    Sensors::init();   DBGLN(F("[SENS] OK"));
+    // FIX: use if/else instead of ternary — DBGLN expands to nothing
+    // when SERIAL_DEBUG=0, making ternary syntax invalid
+    if (RtcTime::init()) { DBGLN(F("[RTC]  OK")); }
+    else                  { DBGLN(F("[RTC]  FAIL")); }
+
+    Sensors::init();
+    DBGLN(F("[SENS] OK"));
 
     if (!Storage::init()) {
         DBGLN(F("[SD]   FAIL"));
@@ -79,43 +66,36 @@ void setup() {
         DBGLN(F("[SD]   OK"));
     }
 
-    // GSM: skip blocking init here — deferred to loop()
-    DBGLN(F("[GSM]  on ESP32 node"));
+    DBGLN(F("[GSM]  on ESP32 node — skipped"));
     DBGLN(F("[BOOT] Complete\n"));
 
-    // Enable WDT now — setup is done in ~200ms
     Power::initWatchdog();
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// LOOP — runs forever, boots exactly once
+// LOOP
 // ─────────────────────────────────────────────────────────────────────
 void loop() {
     Power::feedWatchdog();
 
-    // ── Deferred GSM init (once, 5s after boot, feeds WDT) ───────────
+    // ── GSM init block — stubbed (GSM on ESP32) ───────────────────────
     if (!_gsmInitDone) {
-        unsigned long now = millis();
-        if (now >= 5000UL) {           // wait 5s for SIM800L to stabilise
-            wdt_reset();               // feed WDT before the baud scan
-            GSM::init();               // ~7-8s blocking — WDT fed inside
-            wdt_reset();               // feed again after
+        if (millis() >= 5000UL) {
             _gsmInitDone = true;
-            GSM::available()
-                ? DBGLN(F("[GSM]  OK"))
-                : DBGLN(F("[GSM]  FAIL — SMS disabled"));
+            // FIX: if/else instead of ternary
+            if (GSM::available()) { DBGLN(F("[GSM]  OK")); }
+            else                  { DBGLN(F("[GSM]  FAIL — SMS disabled")); }
         }
-        // Still run ticks below even before GSM is ready
     }
 
-    // ── Async ticks ──────────────────────────────────────────────────
+    // ── Async ticks ───────────────────────────────────────────────────
     Comms::tick();
     GSM::tick();
     Leds::tickAsync();
 
     unsigned long now = millis();
 
-    // ── Sensor sampling + logging ────────────────────────────────────
+    // ── Sensor sampling + logging ─────────────────────────────────────
     if (now - _lastLog >= LOG_INTERVAL_MS) {
         _lastLog = now;
         Power::feedWatchdog();
@@ -136,14 +116,13 @@ void loop() {
         Storage::logRow(_ts, d, flags, battV, _battSt, Comms::lastGPS());
         Comms::sendTel(_ts, d, flags, battV, _battSt);
 
-        // Print TEL/EVT to Serial for ESP32 (and debug USB on Mega)
-        DBGLN(F("[DATA] ") /* abbreviated; full TEL printed by Comms */);
-
         if (flags != _prevFlags) {
             _prevFlags = flags;
             Hazards::flagsToStr(flags, _flagTxt, sizeof(_flagTxt));
             Comms::sendEvt(_ts, _flagTxt, Comms::lastGPS());
 
+            // GSM SMS — handled by ESP32 node now
+            // This block is intentionally a no-op (GSM::available() = false)
             if (_gsmInitDone && GSM::available() &&
                 Hazards::isCritical(flags) &&
                 (now - _lastSms) >= SMS_COOLDOWN_MS) {
@@ -152,9 +131,9 @@ void loop() {
                          "ALERT:%s T:%.1f H:%.0f GPS:%s B:%.1fV(%s) "
                          "MAP:maps.google.com/?q=%s",
                          _flagTxt,
-                         isnan(d.tempC)    ? 0.0f : d.tempC,
-                         isnan(d.humidity) ? 0.0f : d.humidity,
-                         Comms::lastGPS(), battV, _battSt,
+                         isnan(d.tempC)    ? 0.0 : (double)d.tempC,
+                         isnan(d.humidity) ? 0.0 : (double)d.humidity,
+                         Comms::lastGPS(), (double)battV, _battSt,
                          Comms::lastGPS());
                 if (GSM::sendSMS(SMS_NUMBER_1, sms)) {
                     GSM::sendSMS(SMS_NUMBER_2, sms);
@@ -175,14 +154,14 @@ void loop() {
             Power::batteryStatusStr(_battSt, sizeof(_battSt));
             snprintf(hb, sizeof(hb),
                      "HB:%s GPS:%s B:%.1fV(%s) SD:%s",
-                     _ts, Comms::lastGPS(), bv, _battSt,
+                     _ts, Comms::lastGPS(), (double)bv, _battSt,
                      Storage::available() ? "OK" : "FAIL");
             GSM::sendSMS(SMS_NUMBER_1, hb);
         }
         Storage::flush();
     }
 
-    // ── SMS command handler ───────────────────────────────────────────
+    // ── SMS command handler (no-op — GSM on ESP32) ────────────────────
     if (_gsmInitDone) {
         const char* line = GSM::lastLine();
         if (line[0] != '\0') {
@@ -191,8 +170,9 @@ void loop() {
                 char reply[160];
                 snprintf(reply, sizeof(reply),
                          "STATUS T:%.1f H:%.0f W:%d G:%d F:%d GPS:%s B:%.1fV",
-                         d.tempC, d.humidity, d.water, d.mq2, d.flame,
-                         Comms::lastGPS(), Power::batteryVoltage());
+                         (double)d.tempC, (double)d.humidity,
+                         d.water, d.mq2, d.flame,
+                         Comms::lastGPS(), (double)Power::batteryVoltage());
                 GSM::sendSMS(SMS_NUMBER_1, reply);
             } else if (strstr(line, "LOCATION")) {
                 char reply[100];

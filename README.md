@@ -295,7 +295,7 @@ Reference: *Embedded Systems Design: A Unified Hardware/Software Introduction* �
 
 ## 👥 Team
 
-> Department of Electrical & Electronic Engineering | University of Jaffna  
+> Department of Computer Engineering | University of Jaffna  
 > EC6020 Embedded Systems Design — 2025/2026
 
 | Index No. | Name | GitHub |

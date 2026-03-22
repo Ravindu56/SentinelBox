@@ -293,10 +293,18 @@ Reference: *Embedded Systems Design: A Unified Hardware/Software Introduction* �
 
 ---
 
-## 👨‍💻 Author
+## 👥 Team
 
-**P.A.P. Ravindu** | Department of Electrical & Electronic Engineering | University of Jaffna  
-EC6020 Embedded Systems Design — 2025/2026
+> Department of Electrical & Electronic Engineering | University of Jaffna  
+> EC6020 Embedded Systems Design — 2025/2026
+
+| Index No. | Name | GitHub |
+|-----------|------|--------|
+| 2022/E/033 | D.D.R.N. Dayarathna | [@Ravindu56](https://github.com/Ravindu56) |
+| 2022/E/042 | G.D.P.D. Ranasinghe | [@Pasinduranasinghe2001](https://github.com/Pasinduranasinghe2001) |
+| 2022/E/111 | R.M.K.S. Subhasinghe | [@sankalpa15388](https://github.com/sankalpa15388) |
+| 2022/E/126 | R.M.Y.S. Malhara | [@sasindumal](https://github.com/sasindumal) |
+| 2022/E/117 | R.A.M.G.T. Chandraweera | [@GaviruThejana](https://github.com/GaviruThejana) |
 
 ---
 

@@ -1,4 +1,3 @@
-# disaster-proof-blackbox-for-houses
 # SentinelBox 🛡️
 ### Disaster-Proof Household Monitoring & Alert System
 

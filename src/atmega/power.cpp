@@ -26,12 +26,13 @@ void Power::enterSleep() {
   ADCSRA |= (1 << ADEN);           // re-enable ADC
 }
 
-float Power::batteryVoltage() {
-  // Voltage divider: R_high=33k, R_low=10k
-  // Vout = Vbat * 10/43  →  Vbat = ADC * (5/1023) * 4.3
-  uint16_t raw = analogRead(PIN_BATTERY);
-  return raw * (5.0f / 1023.0f) * 4.3f;
+float Power:: batteryVoltage() {
+    long sum = 0;
+    for (int i = 0; i < 16; i++) sum += analogRead(PIN_BATTERY);
+    float avg = sum / 16.0;
+    return avg * (5.0 / 1023.0) * VOLTAGE_DIVIDER_RATIO;
 }
+
 
 void Power::batteryStatusStr(char *buf, uint8_t bufLen) {
   // TP4056 CHRG pin: LOW = actively charging

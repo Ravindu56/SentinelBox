@@ -9,8 +9,8 @@
 #define SMS_NUMBER_2   "+94XXXXXXXXX"
 
 // ── WiFi (ESP32) ──────────────────────────────────────────────────
-#define WIFI_SSID      "YOUR_SSID"
-#define WIFI_PASS      "YOUR_PASSWORD"
+#define WIFI_SSID      "Dialog 4G 720"
+#define WIFI_PASS      "82601557"
 #define AP_SSID        "BlackBox-AP"
 #define AP_PASS        "blackbox123"
 
@@ -20,6 +20,7 @@
 #define MQTT_TOPIC_TEL "blackbox/telemetry"
 #define MQTT_TOPIC_EVT "blackbox/event"
 #define MQTT_TOPIC_CMD "blackbox/cmd"
+#define VOLTAGE_DIVIDER_RATIO 4.3f
 
 // ── ATmega pin map ────────────────────────────────────────────────
 // These Arduino pin numbers work on BOTH Mega and ATmega328P
@@ -30,15 +31,17 @@
 #define PIN_LED_R       7
 #define PIN_LED_G       8
 #define PIN_LED_B       9
-#define SD_CS_PIN       10
+#define SD_CS_PIN_MEGA       53
+#define SD_CS_PIN_UNO      10    // Uno SD CS pin (also used for SIM800L on Mega)
 #define PIN_BTN_PANIC   A3
 #define PIN_WATER       A0
 #define PIN_MQ2         A1
 #define PIN_FLAME       A2
 #define PIN_BATTERY     A6    // voltage divider: 33k/10k → battery+
-#define PIN_TP_CHRG     A7    // TP4056 CHRG pin (LOW = charging)
-#define SIM_RX          2     // ATmega RX from SIM800L TX
-#define SIM_TX          3     // ATmega TX to SIM800L RX (via divider)
+#define PIN_TP_CHRG     A7  
+
+
+#define SD_CS_PIN       SD_CS_PIN_MEGA  // ATmega TX to SIM800L RX (via divider)
 
 // Note: Mega has A6/A7 as ADC-only — same as ATmega328P TQFP
 // For 28-pin DIP ATmega328P, use A4/A5 instead for battery/chrg

@@ -1,0 +1,31 @@
+EC6020: Embedded Systems Design — Project Submission
+=====================================================
+
+Group Number     : 15
+Submitted by     : D.D.R.N. Dayarathna (2022/E/033)
+
+-----------------------------------------------------
+PROJECT DETAILS
+-----------------------------------------------------
+Project Title    : Disaster-Proof Black Box for Houses:
+                   A Real-Time Multi-Hazard Monitoring
+                   and Alert System
+
+Product Name     : SentinelBox
+
+GitHub Repository: https://github.com/Ravindu56/SentinelBox
+
+-----------------------------------------------------
+GROUP MEMBERS
+-----------------------------------------------------
+1. D.D.R.N. Dayarathna        | 2022/E/033 | @Ravindu56
+2. G.D.P.D. Ranasinghe        | 2022/E/042 | @Pasinduranasinghe2001
+3. R.M.K.S. Subhasinghe       | 2022/E/111 | @sankalpa15388
+4. R.M.Y.S. Malhara           | 2022/E/126 | @sasindumal
+5. R.A.M.G.T. Chandraweera    | 2022/E/117 | @GaviruThejana
+
+-----------------------------------------------------
+Department of Computer Engineering
+Faculty of Engineering | University of Jaffna
+Academic Year 2025/2026
+-----------------------------------------------------

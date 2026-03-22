@@ -66,7 +66,7 @@ es.addEventListener('d',e=>{
 
 void WebDash::init() {
   _server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->send_P(200, "text/html", DASH_HTML);
+    req->send(200, "text/html", DASH_HTML);
   });
   _server.on("/health", HTTP_GET, [](AsyncWebServerRequest *req) {
     req->send(200, "text/plain", "OK");

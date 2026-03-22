@@ -55,5 +55,5 @@ void WifiMqtt::setCallback(MQTT_CALLBACK_SIGNATURE) {
 }
 
 IPAddress WifiMqtt::localIP() {
-  return _apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  return _apMode ? WiFi.softAPIP() : WiFi.localIP();
 }

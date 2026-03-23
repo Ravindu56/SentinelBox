@@ -4,10 +4,18 @@
 #include <RTClib.h>
 
 namespace RtcTime {
-  bool init();
-  // Fills buf with "YYYY-MM-DD HH:MM:SS\0"  (needs ≥20 chars)
-  void nowStr(char *buf, uint8_t bufLen);
-  // Returns Unix-style seconds since 2000 (for comparisons)
-  uint32_t nowSec();
-  bool available();
+    bool     init();
+
+    // Fills buf with "YYYY-MM-DD HH:MM:SS\0"  (needs ≥ 20 chars)
+    void     nowStr(char *buf, uint8_t bufLen);
+
+    // Returns Unix-style seconds since 2000 (for comparisons)
+    uint32_t nowSec();
+
+    bool     available();
+
+    // Sync DS3231 from GPS time string sent by ESP32
+    // Accepts format: "YYYY-MM-DDTHH:MM:SS"  (ISO 8601, T separator)
+    // Call from Comms::_processLine() when "TIME," frame is received
+    void     setFromGPS(const char *isoStr);
 }

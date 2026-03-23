@@ -5,3 +5,10 @@
 .vscode/ipch
 platformio.ini
 .venv
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.synctex.gz

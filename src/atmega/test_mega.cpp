@@ -1,289 +1,171 @@
 /*
- * Mega/ATmega328P Node — Hardware Test Script
- * Tests: DHT22, Water, MQ2, Flame, Vibration, SD, RTC, GSM, ESP32 link
- * Flash with: pio run -e mega_test -t upload
+ * Mega → ESP32 Serial Link Test
+ * Mega Serial2 (TX2=D16, RX2=D17) at 115200 baud
+ * Sends TEL frames every 2s, prints ACK responses
+ * Flash: pio run -e mega_test -t upload
  */
 #include <Arduino.h>
-#include <Wire.h>
-#include <SPI.h>
-#include <SD.h>
-#include <DHT.h>
-#include <RTClib.h>
-#include <SoftwareSerial.h>
-#include "../../include/config.h"
 
-DHT            dht(PIN_DHT, DHT22);
-RTC_DS3231     rtc;
-SoftwareSerial sim800(SIM_RX, SIM_TX);
+// ── Helpers ──────────────────────────────────────────────────────────
+void pass(const __FlashStringHelper* m) { Serial.print(F("  [PASS] ")); Serial.println(m); }
+void fail(const __FlashStringHelper* m) { Serial.print(F("  [FAIL] ")); Serial.println(m); }
+void hdr (const __FlashStringHelper* m) {
+  Serial.println();
+  Serial.print(F("=== ")); Serial.print(m); Serial.println(F(" ==="));
+}
 
-struct TestResult {
-  bool dht   = false;
-  bool sd    = false;
-  bool rtc   = false;
-  bool gsm   = false;
-  bool uart0 = false;
-} tr;
+// ── Test 1: Loopback — D16 wired to D17 directly ─────────────────────
+void test_loopback() {
+  hdr(F("Serial2 Loopback (D16-D17 shorted)"));
+  Serial.println(F("  Short D16 to D17, then press Enter"));
+  Serial.println(F("  (skip with 's' if ESP32 already wired)"));
 
-// ─────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────
-bool simCmd(const char* cmd, const char* expect, uint16_t ms = 2000) {
-  sim800.println(cmd);
+  // Wait for user to confirm
+  while (!Serial.available()) {}
+  char c = Serial.read();
+  if (c == 's' || c == 'S') {
+    Serial.println(F("  Skipped"));
+    return;
+  }
+
+  Serial2.begin(115200);
+  delay(100);
+  while (Serial2.available()) Serial2.read(); // flush
+
+  const char* msg = "LOOPBACK_OK\n";
+  Serial2.print(msg);
   unsigned long t0 = millis();
-  String r = "";
-  while (millis() - t0 < ms) {
-    while (sim800.available()) r += (char)sim800.read();
+  String resp = "";
+  while (millis() - t0 < 500) {
+    while (Serial2.available()) resp += (char)Serial2.read();
   }
-  return r.indexOf(expect) >= 0;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// TEST 1: DHT22
-// ─────────────────────────────────────────────────────────────────────
-void test_dht() {
-  Serial.println(F("\n[T1] DHT22 (D4) ────────────────────"));
-  dht.begin();
-  delay(2000);
-  float t = dht.readTemperature();
-  float h = dht.readHumidity();
-  if (!isnan(t) && !isnan(h)) {
-    tr.dht = true;
-    Serial.print(F("     PASS — Temp: ")); Serial.print(t, 1);
-    Serial.print(F(" C  Hum: "));  Serial.print(h, 1);
-    Serial.println(F(" %"));
+  if (resp.indexOf("LOOPBACK_OK") >= 0) {
+    pass(F("Serial2 TX/RX hardware OK"));
   } else {
-    Serial.println(F("     FAIL — Check 10k pull-up and D4 wiring"));
+    fail(F("No loopback echo — check D16/D17 wiring"));
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// TEST 2: Analog Sensors
-// ─────────────────────────────────────────────────────────────────────
-void test_analog() {
-  Serial.println(F("\n[T2] Analog Sensors ────────────────"));
-  int water = analogRead(PIN_WATER);
-  int mq2   = analogRead(PIN_MQ2);
-  int flame = analogRead(PIN_FLAME);
-  int battR = analogRead(PIN_BATTERY);
-  float battV = battR * (5.0f / 1023.0f) * ((33.0f + 10.0f) / 10.0f);
+// ── Test 2: Send TEL frames to ESP32, wait for ACK ───────────────────
+static uint32_t frameCount = 0;
 
-  Serial.print(F("     Water  A0: ")); Serial.print(water);
-  Serial.println(water > 100 ? F("  [WET]") : F("  [DRY]"));
+void send_tel_frame() {
+  // Fake sensor values — real sensors are unplugged
+  float  t    = 28.5f;
+  float  h    = 72.0f;
+  int    w    = 120;
+  int    g    = 310;
+  int    f    = 890;
+  int    vib  = 0;
+  float  batt = 4.12f;
+  uint8_t flags = 0x00;
 
-  Serial.print(F("     MQ-2   A1: ")); Serial.print(mq2);
-  Serial.println(mq2 > MQ2_GAS_TH ? F("  [ALERT]") : F("  [OK]"));
+  char buf[100];
+  snprintf(buf, sizeof(buf),
+    "TEL,%lu,T:%.1f,H:%.1f,W:%d,G:%d,F:%d,V:%d,B:%.2f,FLAGS:%02X\n",
+    millis(), t, h, w, g, f, vib, batt, flags);
 
-  Serial.print(F("     Flame  A2: ")); Serial.print(flame);
-  Serial.println(flame < FLAME_TH ? F("  [FIRE!]") : F("  [OK]"));
-
-  Serial.print(F("     Batt   A6: ")); Serial.print(battR);
-  Serial.print(F("  → ")); Serial.print(battV, 2);
-  Serial.println(F(" V"));
+  Serial2.print(buf);
+  Serial.print(F("  >> SENT: ")); Serial.print(buf);
+  frameCount++;
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// TEST 3: Digital Sensors
-// ─────────────────────────────────────────────────────────────────────
-void test_digital() {
-  Serial.println(F("\n[T3] Digital Sensors ───────────────"));
-  pinMode(PIN_VIB,       INPUT);
-  pinMode(PIN_BTN_PANIC, INPUT_PULLUP);
-
-  int vib   = digitalRead(PIN_VIB);
-  int panic = digitalRead(PIN_BTN_PANIC);
-
-  Serial.print(F("     Vibration D2: "));
-  Serial.println(vib == HIGH ? F("ACTIVE (vibrating)") : F("IDLE"));
-
-  Serial.print(F("     Panic BTN A3: "));
-  Serial.println(panic == LOW ? F("PRESSED") : F("Released"));
-  Serial.println(F("     (tap the vibration sensor to verify, press panic button)"));
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// TEST 4: SD Card
-// ─────────────────────────────────────────────────────────────────────
-void test_sd() {
-  Serial.println(F("\n[T4] SD Card (SPI D10/11/12/13) ───"));
-  if (!SD.begin(SD_CS_PIN)) {
-    Serial.println(F("     FAIL — SD.begin() failed (check CS=D10, SPI wiring)"));
-    return;
-  }
-  File f = SD.open("test.txt", FILE_WRITE);
-  if (!f) {
-    Serial.println(F("     FAIL — Cannot open file for write"));
-    return;
-  }
-  f.println("BlackBox SD test OK");
-  f.close();
-
-  f = SD.open("test.txt");
-  if (f) {
-    String line = f.readStringUntil('\n');
-    f.close();
-    SD.remove("test.txt");
-    tr.sd = true;
-    Serial.print(F("     PASS — Read back: "));
-    Serial.println(line);
-  } else {
-    Serial.println(F("     FAIL — Cannot read back file"));
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// TEST 5: DS3231 RTC
-// ─────────────────────────────────────────────────────────────────────
-void test_rtc() {
-  Serial.println(F("\n[T5] DS3231 RTC (I2C A4/A5) ───────"));
-  Wire.begin();
-  if (!rtc.begin()) {
-    Serial.println(F("     FAIL — RTC not found on I2C (check SDA=A4, SCL=A5)"));
-    return;
-  }
-  if (rtc.lostPower()) {
-    Serial.println(F("     WARNING — RTC lost power, setting compile time"));
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  }
-  DateTime now = rtc.now();
-  char buf[22];
-  snprintf(buf, sizeof(buf), "     %04d-%02d-%02d %02d:%02d:%02d",
-    now.year(), now.month(), now.day(),
-    now.hour(), now.minute(), now.second());
-  tr.rtc = true;
-  Serial.print(F("     PASS — Time: "));
-  Serial.println(buf);
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// TEST 6: SIM800L GSM
-// ─────────────────────────────────────────────────────────────────────
-void test_gsm() {
-  Serial.println(F("\n[T6] SIM800L GSM (D2/D3) ───────────"));
-  sim800.begin(9600);
-  delay(1000);
-  bool at_ok = simCmd("AT", "OK", 2000);
-  if (!at_ok) {
-    // try other baud rates
-    sim800.begin(115200); delay(500);
-    at_ok = simCmd("AT", "OK", 1500);
-    if (!at_ok) {
-      sim800.begin(57600); delay(500);
-      at_ok = simCmd("AT", "OK", 1500);
+bool wait_ack(uint16_t timeoutMs = 1000) {
+  unsigned long t0 = millis();
+  String resp = "";
+  while (millis() - t0 < timeoutMs) {
+    while (Serial2.available()) {
+      char c = Serial2.read();
+      resp += c;
+      if (c == '\n') {
+        resp.trim();
+        Serial.print(F("  << RECV: ")); Serial.println(resp);
+        return resp.startsWith("ACK");
+      }
     }
   }
-  if (!at_ok) {
-    Serial.println(F("     FAIL — No AT response (check D2/D3, voltage divider, power)"));
-    return;
+  Serial.println(F("  << RECV: (timeout)"));
+  return false;
+}
+
+void test_link() {
+  hdr(F("Mega → ESP32 Serial2 Link (115200)"));
+  Serial.println(F("  D16(TX2) ─[10k/20k divider]─ ESP32 GPIO16(RX2)"));
+  Serial.println(F("  D17(RX2) ──────────────────── ESP32 GPIO17(TX2)"));
+  Serial.println(F("  Sending 5 TEL frames, expecting ACK each...\n"));
+
+  Serial2.begin(115200);
+  delay(500); // let ESP32 settle
+
+  uint8_t passed = 0;
+  for (uint8_t i = 0; i < 5; i++) {
+    send_tel_frame();
+    if (wait_ack(1500)) {
+      passed++;
+    }
+    delay(200);
   }
 
-  simCmd("ATE0", "OK");
-  bool csq_ok = simCmd("AT+CSQ", "+CSQ", 2000);
-  bool creg_ok = simCmd("AT+CREG?", "+CREG", 2000);
-  tr.gsm = true;
-
-  // Read signal quality raw
-  sim800.println("AT+CSQ");
-  delay(1000);
-  String resp = "";
-  while (sim800.available()) resp += (char)sim800.read();
-
-  Serial.println(F("     PASS — SIM800L responding"));
-  Serial.print(F("     Signal: ")); Serial.println(resp);
-  if (!csq_ok)  Serial.println(F("     WARNING — No signal quality response"));
-  if (!creg_ok) Serial.println(F("     WARNING — No network registration response"));
+  Serial.println();
+  if (passed == 5) {
+    pass(F("All 5 ACKs received — link fully working"));
+  } else if (passed > 0) {
+    Serial.print(F("  [WARN] ")); Serial.print(passed);
+    Serial.println(F("/5 ACKs — intermittent, check voltage divider"));
+  } else {
+    fail(F("0/5 ACKs — ESP32 not responding"));
+    Serial.println(F("  Checklist:"));
+    Serial.println(F("  1. ESP32 flashed with test_esp32.cpp?"));
+    Serial.println(F("  2. D16 → 10kΩ → junction → 20kΩ → GND, junction → ESP32 GPIO16"));
+    Serial.println(F("  3. Common GND between Mega and ESP32?"));
+    Serial.println(F("  4. ESP32 powered independently (not via Mega 3.3V)?"));
+    Serial.println(F("  5. Measure D16 HIGH = ~5V, junction = ~3.3V?"));
+  }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// TEST 7: ESP32 UART Link (D0/D1)
-// ─────────────────────────────────────────────────────────────────────
-void test_esp32_link() {
-  Serial.println(F("\n[T7] ESP32 Link (D0/D1 = Serial) ──"));
-  Serial.println(F("     Sending PING to ESP32..."));
-  Serial.println(F("     (requires ESP32 to be running with UnoLink active)"));
+// ── Test 3: Live monitor — passthrough for manual inspection ─────────
+void live_monitor() {
+  hdr(F("Live Monitor (Ctrl+C to stop)"));
+  Serial.println(F("  All bytes from Serial2 echoed to Serial0"));
+  Serial.println(F("  Type in Serial Monitor to send to ESP32\n"));
 
-  // D0/D1 IS Serial on Mega — we use the same Serial port
-  // but we print a raw PING and watch for PONG echoed back
-  // For this test, use Serial1 (D18/D19 on Mega) as alternative below
-  Serial.println("PING");   // ESP32 should reply PONG
-  delay(1000);
-  // Can't easily self-read on Serial — instruct user
-  tr.uart0 = true;
-  Serial.println(F("     Manual check: watch ESP32 monitor for [UART1-RX] PING"));
-  Serial.println(F("     and watch this monitor for PONG reply from ESP32"));
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// LED & BUZZER TEST
-// ─────────────────────────────────────────────────────────────────────
-void test_outputs() {
-  Serial.println(F("\n[T8] LED + Buzzer ──────────────────"));
-  pinMode(PIN_LED_R, OUTPUT);
-  pinMode(PIN_LED_G, OUTPUT);
-  pinMode(PIN_LED_B, OUTPUT);
-  pinMode(PIN_BUZZER, OUTPUT);
-
-  Serial.println(F("     RED on 500ms"));
-  digitalWrite(PIN_LED_R, HIGH); delay(500); digitalWrite(PIN_LED_R, LOW);
-  Serial.println(F("     GREEN on 500ms"));
-  digitalWrite(PIN_LED_G, HIGH); delay(500); digitalWrite(PIN_LED_G, LOW);
-  Serial.println(F("     BLUE on 500ms"));
-  digitalWrite(PIN_LED_B, HIGH); delay(500); digitalWrite(PIN_LED_B, LOW);
-  Serial.println(F("     BUZZER beep 200ms"));
-  digitalWrite(PIN_BUZZER, HIGH); delay(200); digitalWrite(PIN_BUZZER, LOW);
-  Serial.println(F("     PASS — verify visually/audibly"));
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// SUMMARY
-// ─────────────────────────────────────────────────────────────────────
-void print_summary() {
-  Serial.println(F("\n════════════════════════════════════"));
-  Serial.println(F("  MEGA TEST SUMMARY"));
-  Serial.println(F("════════════════════════════════════"));
-  Serial.print(F("  [T1] DHT22        : ")); Serial.println(tr.dht  ? F("PASS ✓") : F("FAIL ✗"));
-  Serial.println(        F("  [T2] Analog Sensors: see values above"));
-  Serial.println(        F("  [T3] Digital Sensors: see values above"));
-  Serial.print(F("  [T4] SD Card      : ")); Serial.println(tr.sd   ? F("PASS ✓") : F("FAIL ✗"));
-  Serial.print(F("  [T5] DS3231 RTC   : ")); Serial.println(tr.rtc  ? F("PASS ✓") : F("FAIL ✗"));
-  Serial.print(F("  [T6] SIM800L GSM  : ")); Serial.println(tr.gsm  ? F("PASS ✓") : F("FAIL ✗"));
-  Serial.println(        F("  [T7] ESP32 Link    : manual verify"));
-  Serial.println(        F("  [T8] LED + Buzzer  : manual verify"));
-  Serial.println(F("════════════════════════════════════\n"));
+  unsigned long start = millis();
+  while (millis() - start < 15000UL) { // 15 second window
+    if (Serial.available())  Serial2.write(Serial.read());
+    if (Serial2.available()) Serial.write(Serial2.read());
+  }
+  Serial.println(F("\n  Monitor window closed"));
 }
 
 // ─────────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println(F("\n╔══════════════════════════════════╗"));
-  Serial.println(F("║  Mega BlackBox Hardware Test     ║"));
-  Serial.println(F("╚══════════════════════════════════╝"));
+  Serial.println(F("\n===================================="));
+  Serial.println(F("  Mega ↔ ESP32 Serial Link Test"));
+  Serial.println(F("  Serial2: TX2=D16, RX2=D17, 115200"));
+  Serial.println(F("===================================="));
 
-  test_dht();
-  test_analog();
-  test_digital();
-  test_sd();
-  test_rtc();
-  test_gsm();
-  test_outputs();
-  test_esp32_link();
-  print_summary();
+  test_loopback();
+  test_link();
+  live_monitor();
+
+  Serial.println(F("\n===================================="));
+  Serial.println(F("  Done. Switching to continuous TX"));
+  Serial.println(F("====================================\n"));
 }
 
 void loop() {
-  // Live sensor stream every 2s
   static unsigned long last = 0;
   if (millis() - last >= 2000) {
     last = millis();
-    float t = dht.readTemperature();
-    float h = dht.readHumidity();
-    Serial.printf("[LIVE] T:%.1fC H:%.1f%% W:%d G:%d F:%d V:%d PAN:%d\n",
-      t, h,
-      analogRead(PIN_WATER),
-      analogRead(PIN_MQ2),
-      analogRead(PIN_FLAME),
-      digitalRead(PIN_VIB),
-      !digitalRead(PIN_BTN_PANIC)
-    );
+    send_tel_frame();
+    wait_ack(500);
+  }
+  // pass-through for manual debugging
+  if (Serial.available())  Serial2.write(Serial.read());
+  if (Serial2.available()) {
+    char c = Serial2.read();
+    Serial.write(c);
   }
 }

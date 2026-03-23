@@ -1,195 +1,254 @@
 /*
- * ESP32 Node — Hardware Test Script
- * Tests: WiFi, UART1 (Mega link), UART2 (GPS), MQTT
- * Flash with: pio run -e esp32_test -t upload
+ * ESP32 Full Test: Mega Serial2 Link + SIM800L GSM
+ * Serial2 (RX=GPIO16, TX=GPIO17) ← Mega link  @ 115200
+ * Serial1 (RX=GPIO14, TX=GPIO12) ← SIM800L    @ 115200
  */
 #include <Arduino.h>
-#include <WiFi.h>
-#include <PubSubClient.h>
-#include <TinyGPSPlus.h>
-#include "../../include/config.h"
 
-HardwareSerial UnoSerial(1);  // UART1: GPIO4=RX, GPIO5=TX
-HardwareSerial GPSSerial(2);  // UART2: GPIO16=RX, GPIO17=TX
+// ── Pin definitions ───────────────────────────────────────────────────
+#define MEGA_RX   16   // ESP32 receives from Mega TX
+#define MEGA_TX   17   // ESP32 sends to Mega RX
+#define SIM_RX    14   // ESP32 receives from SIM800L TXD
+#define SIM_TX    12   // ESP32 sends to SIM800L RXD (via divider)
 
-TinyGPSPlus gps;
-WiFiClient  espClient;
-PubSubClient mqtt(espClient);
+// ── Config ────────────────────────────────────────────────────────────
+#define TEST_PHONE   "94705625156"   // ← your number
+#define SEND_SMS     false           // set true to actually send SMS
 
-// ── Test result tracker ───────────────────────────────────────────────
-struct TestResult {
-  bool wifi   = false;
-  bool uart1  = false;
-  bool gps    = false;
-  bool mqtt   = false;
-} tr;
-
-// ─────────────────────────────────────────────────────────────────────
-// TEST 1: WiFi
-// ─────────────────────────────────────────────────────────────────────
-void test_wifi() {
-  Serial.println(F("\n[T1] WiFi ─────────────────────────"));
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print(F("     Connecting"));
-  unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
-    delay(300); Serial.print('.');
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    tr.wifi = true;
-    Serial.println();
-    Serial.print(F("     PASS — IP: "));
-    Serial.println(WiFi.localIP().toString());
-  } else {
-    Serial.println(F("\n     FAIL — Check SSID/PASS in config.h"));
-  }
+// ── Helpers ───────────────────────────────────────────────────────────
+void pass(const char* m) { Serial.print("  [PASS] "); Serial.println(m); }
+void fail(const char* m) { Serial.print("  [FAIL] "); Serial.println(m); }
+void warn(const char* m) { Serial.print("  [WARN] "); Serial.println(m); }
+void hdr (const char* m) {
+  Serial.println();
+  Serial.print("=== "); Serial.print(m); Serial.println(" ===");
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// TEST 2: UART1 loopback (Mega link)
-// ─────────────────────────────────────────────────────────────────────
-void test_uart1() {
-  Serial.println(F("\n[T2] UART1 Mega Link (GPIO4/5) ─────"));
-  Serial.println(F("     Sending PING — bridge GPIO4+GPIO5 with a wire for loopback"));
-  Serial.println(F("     OR connect Mega and watch for PONG reply"));
-
-  UnoSerial.println("PING");
+// ── GSM AT command helper ─────────────────────────────────────────────
+bool atCmd(const char* cmd, const char* expect, uint16_t tMs = 3000) {
+  while (Serial1.available()) Serial1.read(); // flush
+  Serial.print("  >> "); Serial.println(cmd);
+  Serial1.println(cmd);
   unsigned long t0 = millis();
   String resp = "";
-  while (millis() - t0 < 3000) {
-    while (UnoSerial.available()) resp += (char)UnoSerial.read();
+  while (millis() - t0 < tMs) {
+    while (Serial1.available()) {
+      char c = Serial1.read();
+      resp += c;
+      if (resp.indexOf(expect) >= 0) {
+        resp.trim();
+        Serial.print("  << "); Serial.println(resp);
+        return true;
+      }
+    }
   }
   resp.trim();
-  if (resp.indexOf("PONG") >= 0) {
-    tr.uart1 = true;
-    Serial.print(F("     PASS — Got: "));
-    Serial.println(resp);
-  } else if (resp.length() > 0) {
-    Serial.print(F("     PARTIAL — Got unexpected: "));
-    Serial.println(resp);
-  } else {
-    Serial.println(F("     FAIL — No response (OK if Mega not connected yet)"));
-  }
+  Serial.print("  << "); 
+  Serial.println(resp.length() > 0 ? resp : "(timeout)");
+  return false;
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// TEST 3: GPS UART2
-// ─────────────────────────────────────────────────────────────────────
-void test_gps() {
-  Serial.println(F("\n[T3] GPS UART2 (GPIO16/17) ─────────"));
-  Serial.println(F("     Listening for NMEA sentences for 5s..."));
-  unsigned long t0 = millis();
-  int nmea_count = 0;
-  bool got_fix   = false;
+// ── GSM Tests ─────────────────────────────────────────────────────────
+bool simReady = false;
 
-  while (millis() - t0 < 5000) {
-    while (GPSSerial.available()) {
-      char c = (char)GPSSerial.read();
-      if (gps.encode(c)) {
-        nmea_count++;
-        if (gps.location.isValid()) got_fix = true;
-      }
-      // Print raw NMEA for visibility
-      Serial.write(c);
+void test_gsm_autobaud() {
+  hdr("GSM Auto-Baud (Serial1)");
+  Serial.println("  SIM_RX=GPIO14 <- EVB TXD direct");
+  Serial.println("  SIM_TX=GPIO12 -> 10k/20k divider -> EVB RXD");
+  Serial.println("  EVB VCC=4.2V buck, GND=common");
+
+  const uint32_t bauds[] = {9600, 19200, 38400, 57600, 115200};
+  for (uint8_t i = 0; i < 5; i++) {
+    Serial1.end();
+    delay(50);
+    Serial1.begin(bauds[i], SERIAL_8N1, SIM_RX, SIM_TX);
+    delay(300);
+    while (Serial1.available()) Serial1.read();
+    Serial1.println("AT");
+    unsigned long t0 = millis();
+    String r = "";
+    while (millis() - t0 < 1500) {
+      while (Serial1.available()) r += (char)Serial1.read();
+      if (r.indexOf("OK") >= 0) break;
     }
-  }
-
-  if (nmea_count > 0) {
-    tr.gps = true;
-    Serial.println();
-    Serial.print(F("     PASS — NMEA sentences decoded: "));
-    Serial.println(nmea_count);
-    if (got_fix) {
-      Serial.print(F("     GPS FIX — Lat: "));
-      Serial.print(gps.location.lat(), 6);
-      Serial.print(F("  Lon: "));
-      Serial.println(gps.location.lng(), 6);
-    } else {
-      Serial.println(F("     No fix yet (normal indoors — data flow OK)"));
+    Serial.print("  Baud "); Serial.print(bauds[i]);
+    if (r.indexOf("OK") >= 0) {
+      Serial.println(" -> OK");
+      simReady = true;
+      pass("SIM800L responding");
+      // lock baud and disable echo
+      Serial1.println("ATE0");
+      delay(200);
+      return;
     }
-  } else {
-    Serial.println(F("\n     FAIL — No NMEA data (check GPS wiring GPIO16/17)"));
+    Serial.println(" -> no response");
   }
+  fail("SIM800L not responding — check power/wiring");
+  Serial.println("  Checklist:");
+  Serial.println("  1. EVB VCC = 4.2V? (NOT 3.3V from ESP32)");
+  Serial.println("  2. EVB LED blinking every 3s?");
+  Serial.println("  3. GPIO14 <- EVB TXD direct wire?");
+  Serial.println("  4. GPIO12 -> divider junction -> EVB RXD?");
+  Serial.println("  5. Common GND: ESP32 + EVB + Mega?");
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// TEST 4: MQTT
-// ─────────────────────────────────────────────────────────────────────
-void test_mqtt() {
-  Serial.println(F("\n[T4] MQTT ──────────────────────────"));
-  if (!tr.wifi) {
-    Serial.println(F("     SKIP — WiFi failed, cannot test MQTT"));
-    return;
-  }
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  String cid = "bb-test-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  Serial.print(F("     Connecting to "));
-  Serial.print(MQTT_HOST);
-  Serial.print(':');
-  Serial.println(MQTT_PORT);
+void test_gsm_simcard() {
+  hdr("SIM Card");
+  if (!simReady) { warn("Skipped"); return; }
+  atCmd("AT+CPIN?", "READY", 5000)
+    ? pass("SIM ready") : fail("SIM not ready — check card/PIN");
+}
 
+void test_gsm_network() {
+  hdr("Network Registration");
+  if (!simReady) { warn("Skipped"); return; }
+  atCmd("AT+CREG?", "CREG", 5000);
+  Serial.println("  0,1=home  0,5=roaming  0,2=searching");
+}
+
+void test_gsm_signal() {
+  hdr("Signal Strength");
+  if (!simReady) { warn("Skipped"); return; }
+  atCmd("AT+CSQ", "CSQ");
+  Serial.println("  10-14=OK  15-19=good  20-31=excellent  99=none");
+}
+
+void test_gsm_sms() {
+  hdr("Send SMS");
+  if (!simReady) { warn("Skipped"); return; }
+#if SEND_SMS
+  if (!atCmd("AT+CMGF=1", "OK", 2000)) { fail("CMGF failed"); return; }
+  char buf[32];
+  snprintf(buf, sizeof(buf), "AT+CMGS=\"%s\"", TEST_PHONE);
+  while (Serial1.available()) Serial1.read();
+  Serial.print("  >> "); Serial.println(buf);
+  Serial1.println(buf);
+  delay(500);
+  Serial1.print("BlackBox ESP32+GSM Test OK");
+  Serial1.write(26); // Ctrl+Z
   unsigned long t0 = millis();
-  while (!mqtt.connected() && millis() - t0 < 8000) {
-    mqtt.connect(cid.c_str());
-    delay(500);
+  String r = "";
+  while (millis() - t0 < 12000) {
+    while (Serial1.available()) { char c = Serial1.read(); r += c; Serial.write(c); }
+    if (r.indexOf("+CMGS") >= 0) { pass("SMS sent!"); return; }
+    if (r.indexOf("ERROR") >= 0) { fail("ERROR response"); return; }
   }
-  if (mqtt.connected()) {
-    tr.mqtt = true;
-    bool pub = mqtt.publish("blackbox/test", "{\"node\":\"esp32\",\"status\":\"test_ok\"}");
-    Serial.print(F("     PASS — Publish: "));
-    Serial.println(pub ? F("OK") : F("FAIL"));
-    mqtt.disconnect();
-  } else {
-    Serial.println(F("     FAIL — Cannot reach broker (check internet)"));
-  }
+  fail("Timeout");
+#else
+  warn("Set SEND_SMS true to enable");
+#endif
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// SUMMARY
-// ─────────────────────────────────────────────────────────────────────
-void print_summary() {
-  Serial.println(F("\n════════════════════════════════════"));
-  Serial.println(F("  ESP32 TEST SUMMARY"));
-  Serial.println(F("════════════════════════════════════"));
-  Serial.print(F("  [T1] WiFi      : ")); Serial.println(tr.wifi  ? F("PASS ✓") : F("FAIL ✗"));
-  Serial.print(F("  [T2] UART1     : ")); Serial.println(tr.uart1 ? F("PASS ✓") : F("FAIL ✗"));
-  Serial.print(F("  [T3] GPS UART2 : ")); Serial.println(tr.gps   ? F("PASS ✓") : F("FAIL ✗"));
-  Serial.print(F("  [T4] MQTT      : ")); Serial.println(tr.mqtt  ? F("PASS ✓") : F("FAIL ✗"));
-  Serial.println(F("════════════════════════════════════\n"));
+// ── Mega Link State ───────────────────────────────────────────────────
+static uint32_t rxCount  = 0;
+static uint32_t ackCount = 0;
+static uint32_t errCount = 0;
+static String   rxBuf    = "";
+
+struct TelFrame {
+  unsigned long ts;
+  float temp, hum, batt;
+  int   water, gas, flame, vib;
+  uint8_t flags;
+  bool  valid;
+};
+
+TelFrame parseTel(const String& line) {
+  TelFrame f = {};
+  if (!line.startsWith("TEL,")) return f;
+  char buf[110];
+  line.toCharArray(buf, sizeof(buf));
+  char* tok = strtok(buf, ","); // TEL
+  tok = strtok(NULL, ",");      // ts
+  if (tok) f.ts = atol(tok);
+  while ((tok = strtok(NULL, ",")) != NULL) {
+    if      (strncmp(tok,"T:",2)==0)      f.temp  = atof(tok+2);
+    else if (strncmp(tok,"H:",2)==0)      f.hum   = atof(tok+2);
+    else if (strncmp(tok,"W:",2)==0)      f.water = atoi(tok+2);
+    else if (strncmp(tok,"G:",2)==0)      f.gas   = atoi(tok+2);
+    else if (strncmp(tok,"F:",2)==0)      f.flame = atoi(tok+2);
+    else if (strncmp(tok,"V:",2)==0)      f.vib   = atoi(tok+2);
+    else if (strncmp(tok,"B:",2)==0)      f.batt  = atof(tok+2);
+    else if (strncmp(tok,"FLAGS:",6)==0)  f.flags = (uint8_t)strtol(tok+6,NULL,16);
+  }
+  f.valid = true;
+  return f;
 }
 
-// ─────────────────────────────────────────────────────────────────────
+// ── Setup ─────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
   delay(500);
-  UnoSerial.begin(115200, SERIAL_8N1, ESP_UNO_RX, ESP_UNO_TX);
-  GPSSerial.begin(9600,   SERIAL_8N1, ESP_GPS_RX, ESP_GPS_TX);
+  Serial.println("\n====================================");
+  Serial.println("  ESP32 Full Test: Mega + GSM");
+  Serial.println("  Serial2: Mega  RX=GPIO16 TX=GPIO17");
+  Serial.println("  Serial1: GSM   RX=GPIO14 TX=GPIO12");
+  Serial.println("====================================");
 
-  Serial.println(F("\n╔══════════════════════════════════╗"));
-  Serial.println(F("║  ESP32 BlackBox Hardware Test    ║"));
-  Serial.println(F("╚══════════════════════════════════╝"));
+  // Mega link
+  Serial2.begin(115200, SERIAL_8N1, MEGA_RX, MEGA_TX);
+  delay(200);
+  while (Serial2.available()) Serial2.read();
+  Serial.println("[OK] Serial2 (Mega link) ready");
 
-  test_wifi();
-  test_uart1();
-  test_gps();
-  test_mqtt();
-  print_summary();
+  // GSM tests — run once at boot
+  test_gsm_autobaud();
+  test_gsm_simcard();
+  test_gsm_network();
+  test_gsm_signal();
+  test_gsm_sms();
+
+  Serial.println("\n====================================");
+  Serial.println("  Boot tests done. Entering loop.");
+  Serial.println("  Waiting for TEL frames from Mega...");
+  Serial.println("====================================\n");
 }
 
+// ── Loop ──────────────────────────────────────────────────────────────
 void loop() {
-  // Continuous UART1 monitor — shows raw data arriving from Mega
-  while (UnoSerial.available()) {
-    Serial.print(F("[UART1-RX] "));
-    Serial.println(UnoSerial.readStringUntil('\n'));
+  // ── Receive TEL from Mega ──────────────────────────────────────
+  while (Serial2.available()) {
+    char c = Serial2.read();
+    if (c == '\n') {
+      rxBuf.trim();
+      if (rxBuf.length() > 0) {
+        rxCount++;
+        if (rxBuf.startsWith("TEL,")) {
+          TelFrame f = parseTel(rxBuf);
+          if (f.valid) {
+            Serial.print("[TEL] T="); Serial.print(f.temp,1);
+            Serial.print("C H=");     Serial.print(f.hum,1);
+            Serial.print("% W=");     Serial.print(f.water);
+            Serial.print(" G=");      Serial.print(f.gas);
+            Serial.print(" B=");      Serial.print(f.batt,2);
+            Serial.print("V FL=0x");  Serial.println(f.flags,HEX);
+            // Send ACK back to Mega
+            char ack[30];
+            snprintf(ack, sizeof(ack), "ACK,%lu\n", millis());
+            Serial2.print(ack);
+            ackCount++;
+            // ── Future: forward to GSM here ──
+            // if (simReady && f.flags > 0) gsm_alert(f);
+          } else { errCount++; }
+        }
+      }
+      rxBuf = "";
+    } else {
+      if (rxBuf.length() < 120) rxBuf += c;
+    }
   }
-  // Continuous GPS raw feed
-  while (GPSSerial.available()) {
-    char c = (char)GPSSerial.read();
-    gps.encode(c);
+
+  // ── Pass GSM unsolicited messages to USB Serial ────────────────
+  while (Serial1.available()) {
+    Serial.write(Serial1.read());
   }
-  if (gps.location.isUpdated()) {
-    Serial.printf("[GPS] Lat: %.6f  Lon: %.6f  Sats: %d\n",
-      gps.location.lat(), gps.location.lng(),
-      gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
+
+  // ── Stats every 10s ───────────────────────────────────────────
+  static unsigned long lastStat = 0;
+  if (millis() - lastStat >= 10000) {
+    lastStat = millis();
+    Serial.print("[STAT] RX:"); Serial.print(rxCount);
+    Serial.print(" ACK:");      Serial.print(ackCount);
+    Serial.print(" ERR:");      Serial.println(errCount);
   }
 }

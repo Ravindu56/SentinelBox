@@ -1,10 +1,15 @@
 // gsm_node.cpp — SIM800L on ESP32 UART1
-// GPIO12 = RX (ESP32 ← SIM800L TX)  — direct, SIM800L TX = 3.3V
+// GPIO13 = RX (ESP32 ← SIM800L TX)  — direct, SIM800L TX = 3.3V
 // GPIO14 = TX (ESP32 → SIM800L RX)  — 1kΩ/2kΩ voltage divider to 2.2V
+//
+// NOTE: GPIO12 must NOT be used as RX — it is a strapping pin.
+// SIM800L TX idles HIGH and pulls GPIO12 HIGH at boot,
+// causing ESP32 to select 1.8V flash voltage → upload failure.
 #include "gsm_node.h"
 
-// UART1 — never use UART0 (that is Serial / USB debug)
-#define GSM_RX_PIN      12
+// UART1 — GPIO13(RX) / GPIO14(TX)
+// Do NOT use GPIO12 (strapping), GPIO0 (boot), GPIO1/GPIO3 (Serial/USB)
+#define GSM_RX_PIN      13
 #define GSM_TX_PIN      14
 #define GSM_BAUD        9600
 #define GSM_INIT_WAIT   1500    // ms after begin before first AT
@@ -38,12 +43,12 @@ static bool _cmd(const char *c, const char *expect, uint16_t tMs = 2000) {
 
 // ─────────────────────────────────────────────────────────────────────
 void GsmNode::init() {
-  // Serial1 = UART1, reassigned to GPIO12(RX) / GPIO14(TX)
+  // Serial1 = UART1, reassigned to GPIO13(RX) / GPIO14(TX)
   Serial1.begin(GSM_BAUD, SERIAL_8N1, GSM_RX_PIN, GSM_TX_PIN);
   delay(GSM_INIT_WAIT);
   while (Serial1.available()) Serial1.read();   // flush power-on junk
 
-  Serial.println(F("[GSM]  Probing SIM800L on UART1 GPIO12/14..."));
+  Serial.println(F("[GSM]  Probing SIM800L on UART1 GPIO13(RX)/GPIO14(TX)..."));
 
   // Probe — try twice (SIM800L may need a nudge after power-on)
   bool alive = _cmd("AT", "OK", 3000) || _cmd("AT", "OK", 3000);
@@ -53,9 +58,9 @@ void GsmNode::init() {
     return;
   }
 
-  _cmd("ATE0",             "OK", 1000);   // echo off
-  _cmd("AT+CMGF=1",        "OK", 1000);   // SMS text mode
-  _cmd("AT+CNMI=2,0,0,0,0","OK", 1000);  // suppress unsolicited SMS storage
+  _cmd("ATE0",              "OK", 1000);   // echo off
+  _cmd("AT+CMGF=1",         "OK", 1000);   // SMS text mode
+  _cmd("AT+CNMI=2,0,0,0,0", "OK", 1000);  // suppress unsolicited SMS storage
 
   _ok = true;
   Serial.println(F("[GSM]  SIM800L ready"));

@@ -11,7 +11,7 @@
 // Do NOT use GPIO12 (strapping), GPIO0 (boot), GPIO1/GPIO3 (Serial/USB)
 #define GSM_RX_PIN      13
 #define GSM_TX_PIN      14
-#define GSM_BAUD        9600
+#define GSM_BAUD        115200
 #define GSM_INIT_WAIT   1500    // ms after begin before first AT
 
 static bool     _ok      = false;

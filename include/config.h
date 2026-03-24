@@ -5,8 +5,8 @@
 #pragma once
 
 // ── Phone numbers ─────────────────────────────────────────────────
-#define SMS_NUMBER_1   "+94XXXXXXXXX"
-#define SMS_NUMBER_2   "+94XXXXXXXXX"
+#define SMS_NUMBER_1   "+94766402690"
+#define SMS_NUMBER_2   "+94771976289"
 
 // ── WiFi (ESP32) ──────────────────────────────────────────────────
 #define WIFI_SSID      "Dialog 4G 720"

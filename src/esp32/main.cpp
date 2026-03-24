@@ -2,18 +2,14 @@
 // main.cpp — ESP32 WROOM Utility Node
 // Disaster-Proof BlackBox  |  EC6020 Embedded Systems Design
 //
-// Modules:
-//   gps_parser  — NEO-6M GPS on UART2 (GPIO16 RX / GPIO17 TX)
-//   uno_link    — ATmega link on UART1 (GPIO4 RX / GPIO5 TX)
-//   gsm_node    — SIM800L GSM on UART0 (GPIO26 RX / GPIO27 TX)
-//   wifi_mqtt   — WiFi + MQTT with auto-reconnect + AP fallback
-//   web_server  — Async dashboard + SSE live updates
+// UART allocation:
+//   UART0 (Serial)  — USB debug monitor        GPIO1 TX / GPIO3 RX
+//   UART1 (Serial1) — SIM800L GSM              GPIO14 TX / GPIO12 RX
+//   UART2 (Serial2) — NEO-6M GPS              GPIO17 TX / GPIO16 RX
+//   UnoLink         — ATmega link (Serial2 alt) GPIO5 TX / GPIO4 RX
 //
 // Power coordination:
 //   GPIO2 (EXT0) ← ATmega D2: HIGH pulse wakes ESP32 from deep sleep
-//   UART1 frames: SLEEP → deep sleep | WAKE → acknowledge | PWR,x → state
-//
-// millis()-based scheduling — NO blocking delay() in main loop.
 // =====================================================================
 
 #include <Arduino.h>
@@ -27,24 +23,23 @@
 #include "wifi_mqtt.h"
 #include "web_server.h"
 
-// ── GPIO2: ATmega D2 → EXT0 wake source ──────────────────────────────
 #define PIN_WAKE_FROM_ATMEGA  2
 
-// ── Scheduler ─────────────────────────────────────────────────────────
+// ── Scheduler ─────────────────────────────────────────────────────
 static unsigned long _lastDashPush  = 0;
 static unsigned long _lastHeartbeat = 0;
 static unsigned long _lastSmsSent   = 0;
 static unsigned long _lastGpsSent   = 0;
+static unsigned long _lastGpsReport = 0;   // 1-min GPS location report
 static bool          _gsmInitDone   = false;
 
-// ── Power state ───────────────────────────────────────────────────────
-// Tracks last known power mode reported by ATmega
-// "MAINS" | "BATT" | "CRIT"
+// ── Power state ───────────────────────────────────────────────────
 static char _pwrState[8] = "MAINS";
 
 // ── Forward declarations ──────────────────────────────────────────────
 static void _handlePwrFrame(const char *state);
 static void _sendTimeToAtmega();
+static void _reportGpsLocation();
 
 // ── MQTT incoming command callback ────────────────────────────────────
 void onMqttMessage(char *topic, byte *payload, unsigned int len) {
@@ -81,32 +76,27 @@ void onMqttMessage(char *topic, byte *payload, unsigned int len) {
 void setup() {
     Serial.begin(115200);
 
-    // ── Print wake reason ──────────────────────────────────────────
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-    if (cause == ESP_SLEEP_WAKEUP_EXT0) {
+    if (cause == ESP_SLEEP_WAKEUP_EXT0)
         Serial.println(F("[PWR]  Woke from ATmega GPIO pulse (EXT0)"));
-    } else if (cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+    else
         Serial.println(F("[BOOT] Cold boot / reset"));
-    }
 
-    // ── Configure EXT0 wakeup on GPIO2 HIGH ───────────────────────
-    // GPIO2 must have a pull-down so it doesn't float during sleep
     pinMode(PIN_WAKE_FROM_ATMEGA, INPUT);
     esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_WAKE_FROM_ATMEGA, 1);
 
     Serial.println(F("\n[ESP32] BlackBox utility node booting..."));
 
-    GpsParser::init();    // UART2: GPIO16/17 — NEO-6M GPS @ 9600
-    UnoLink::init();      // UART1: GPIO4/5   — ATmega link @ 115200
+    GpsParser::init();    // UART2: GPIO16 RX / GPIO17 TX — NEO-6M @ 9600
+    UnoLink::init();      // UART using GPIO4 RX / GPIO5 TX — ATmega @ 115200
     WifiMqtt::init();
     WifiMqtt::setCallback(onMqttMessage);
     WebDash::init();
 
-    // OTA firmware updates over WiFi
     ArduinoOTA.setHostname("sentinelbox-esp32");
-    ArduinoOTA.onStart([]()  { Serial.println(F("[OTA] Start")); });
+    ArduinoOTA.onStart([]()  { Serial.println(F("[OTA]  Start")); });
     ArduinoOTA.onError([](ota_error_t e) {
-        Serial.printf("[OTA] Error %u\n", e);
+        Serial.printf("[OTA]  Error %u\n", e);
     });
     ArduinoOTA.begin();
 
@@ -119,17 +109,17 @@ void setup() {
 // LOOP
 // ─────────────────────────────────────────────────────────────────────
 void loop() {
-    // ── Deferred GSM init (3s after boot) ─────────────────────────
+    // ── Deferred GSM init — 3s after boot so Serial is stable ────────
     if (!_gsmInitDone && millis() >= 3000UL) {
         _gsmInitDone = true;
-        GsmNode::init();
+        GsmNode::init();   // UART1: GPIO12 RX / GPIO14 TX — SIM800L @ 9600
         Serial.printf("[GSM]  %s\n",
-            GsmNode::available() ? "Ready" : "Not connected — SMS disabled");
+            GsmNode::available() ? "SIM800L ready" : "Not found — SMS disabled");
     }
 
-    // ── Non-blocking module ticks ──────────────────────────────────
+    // ── Non-blocking module ticks ────────────────────────────────
     GpsParser::tick();
-    UnoLink::tick();      // also parses SLEEP/WAKE/PWR frames now
+    UnoLink::tick();
     GsmNode::tick();
     WifiMqtt::tick();
     ArduinoOTA.handle();
@@ -143,8 +133,7 @@ void loop() {
         Serial.println(F("[PWR]  ATmega requested deep sleep — entering now"));
         Serial.flush();
         if (WifiMqtt::mqttConnected()) {
-            WifiMqtt::publish("blackbox/power",
-                              "{\"pwr\":\"SLEEPING\"}");
+            WifiMqtt::publish("blackbox/power", "{\"pwr\":\"SLEEPING\"}");
             delay(100);
         }
         esp_deep_sleep_start();
@@ -156,16 +145,21 @@ void loop() {
         UnoLink::clearPwrState();
     }
 
-    // ── Send GPS time to ATmega when GPS lock is fresh ─────────────
+    // ── Send GPS time to ATmega every 60s when locked ─────────────
     if (GpsParser::hasTime() && (now - _lastGpsSent >= 60000UL)) {
         _lastGpsSent = now;
         _sendTimeToAtmega();
     }
 
-    // ── New telemetry frame from ATmega ───────────────────────────
+    // ── 1-minute GPS location report → Serial + SMS both numbers ────
+    if (now - _lastGpsReport >= 60000UL) {
+        _lastGpsReport = now;
+        _reportGpsLocation();
+    }
+
+    // ── New telemetry frame from ATmega ──────────────────────────
     const TelData &tel = UnoLink::telemetry();
     if (tel.fresh) {
-        // ── Build telemetry JSON — includes panic field ────────────
         char json[300];
         snprintf(json, sizeof(json),
             "{\"ts\":\"%s\",\"t\":%.1f,\"h\":%.0f,"
@@ -179,12 +173,10 @@ void loop() {
             tel.flags, tel.battV, tel.battSt,
             gps, GpsParser::sats(), _pwrState);
         WifiMqtt::publish(MQTT_TOPIC_TEL, json);
-
-        // ACK back to ATmega
         UnoLink::sendAck();
     }
 
-    // ── Hazard event from ATmega ──────────────────────────────────
+    // ── Hazard event from ATmega ──────────────────────────────
     const char *evt = UnoLink::lastEvent();
     if (evt[0] != '\0') {
         char payload[160];
@@ -193,11 +185,10 @@ void loop() {
                  evt, gps, _pwrState);
         WifiMqtt::publish(MQTT_TOPIC_EVT, payload);
 
-        bool isCritical   = (strstr(evt, "NORMAL") == nullptr);
-        bool isPanic      = (strstr(evt, "PANIC")  != nullptr);
-        bool cooldownOk   = (now - _lastSmsSent) >= SMS_COOLDOWN_MS;
+        bool isCritical = (strstr(evt, "NORMAL") == nullptr);
+        bool isPanic    = (strstr(evt, "PANIC")  != nullptr);
+        bool cooldownOk = (now - _lastSmsSent) >= SMS_COOLDOWN_MS;
 
-        // ── PANIC bypasses the SMS cooldown — always send immediately
         if (GsmNode::available() && isCritical && (cooldownOk || isPanic)) {
             char sms[160];
             snprintf(sms, sizeof(sms),
@@ -208,19 +199,16 @@ void loop() {
                      gps, tel.battV, gps);
             if (GsmNode::sendSMS(SMS_NUMBER_1, sms)) {
                 GsmNode::sendSMS(SMS_NUMBER_2, sms);
-                // Only update cooldown timer for non-panic events
-                // so repeated panic presses still send each time
                 if (!isPanic) _lastSmsSent = now;
                 Serial.println(isPanic
-                    ? F("[GSM] PANIC SMS sent to both numbers")
-                    : F("[GSM] Alert SMS sent to both numbers"));
+                    ? F("[GSM]  PANIC SMS sent to both numbers")
+                    : F("[GSM]  Alert SMS sent to both numbers"));
             }
         }
-
         UnoLink::clearEvent();
     }
 
-    // ── Incoming SMS command handler ──────────────────────────────
+    // ── Incoming SMS command handler ───────────────────────────
     const char *gsmLine = GsmNode::lastLine();
     if (gsmLine[0] != '\0') {
         if (strstr(gsmLine, "STATUS")) {
@@ -248,13 +236,13 @@ void loop() {
         GsmNode::clearLastLine();
     }
 
-    // ── Web dashboard SSE push every 2s ───────────────────────────
+    // ── Web dashboard SSE push every 2s ─────────────────────────
     if (now - _lastDashPush >= 2000UL) {
         _lastDashPush = now;
         WebDash::pushUpdate(tel, gps, GpsParser::sats());
     }
 
-    // ── Hourly heartbeat SMS ──────────────────────────────────────
+    // ── Hourly heartbeat SMS ───────────────────────────────────
     if (now - _lastHeartbeat >= HEARTBEAT_MS) {
         _lastHeartbeat = now;
         if (GsmNode::available()) {
@@ -270,6 +258,51 @@ void loop() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// _reportGpsLocation — every 60s: print to Serial + SMS both numbers
+// ─────────────────────────────────────────────────────────────────────
+static void _reportGpsLocation() {
+    char gps[32]; GpsParser::coordStr(gps, sizeof(gps));
+    uint8_t sats = GpsParser::sats();
+    bool    lock = GpsParser::valid();
+
+    Serial.println(F("─────────────────────────────────────"));
+    Serial.print(F("[GPS]  Location report @ "));
+    Serial.print(millis() / 1000); Serial.println(F("s uptime"));
+    if (lock) {
+        Serial.print(F("[GPS]  Coords : ")); Serial.println(gps);
+        Serial.print(F("[GPS]  Sats   : ")); Serial.println(sats);
+        Serial.print(F("[GPS]  Map    : https://maps.google.com/?q="));
+        Serial.println(gps);
+    } else {
+        Serial.println(F("[GPS]  No fix — waiting for satellite lock"));
+        Serial.print(F("[GPS]  Sats visible: ")); Serial.println(sats);
+    }
+    Serial.println(F("─────────────────────────────────────"));
+
+    if (!GsmNode::available()) {
+        Serial.println(F("[GPS]  SMS skipped — GSM not available"));
+        return;
+    }
+    if (!lock) {
+        Serial.println(F("[GPS]  SMS skipped — no GPS fix yet"));
+        return;
+    }
+
+    char sms[160];
+    snprintf(sms, sizeof(sms),
+             "SentinelBox Location:\n"
+             "GPS: %s\n"
+             "Map: maps.google.com/?q=%s\n"
+             "Sats: %u  PWR: %s",
+             gps, gps, sats, _pwrState);
+
+    bool sent1 = GsmNode::sendSMS(SMS_NUMBER_1, sms);
+    bool sent2 = GsmNode::sendSMS(SMS_NUMBER_2, sms);
+    Serial.printf("[GPS]  SMS to %s : %s\n", SMS_NUMBER_1, sent1 ? "OK" : "FAIL");
+    Serial.printf("[GPS]  SMS to %s : %s\n", SMS_NUMBER_2, sent2 ? "OK" : "FAIL");
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // _handlePwrFrame — act on PWR,x from ATmega
 // ─────────────────────────────────────────────────────────────────────
 static void _handlePwrFrame(const char *state) {
@@ -278,24 +311,21 @@ static void _handlePwrFrame(const char *state) {
 
     char payload[48];
     snprintf(payload, sizeof(payload), "{\"pwr\":\"%s\"}", state);
-    if (WifiMqtt::mqttConnected()) {
+    if (WifiMqtt::mqttConnected())
         WifiMqtt::publish("blackbox/power", payload);
-    }
 
     if (strcmp(state, "CRIT") == 0 && GsmNode::available()) {
         const TelData &t = UnoLink::telemetry();
         char sms[120];
         snprintf(sms, sizeof(sms),
                  "WARNING: SentinelBox battery critical (%.2fV). "
-                 "Device entering long-sleep mode.",
-                 t.battV);
+                 "Device entering long-sleep mode.", t.battV);
         GsmNode::sendSMS(SMS_NUMBER_1, sms);
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────
 // _sendTimeToAtmega — send GPS time string for DS3231 sync
-// Format: TIME,YYYY-MM-DDTHH:MM:SS
 // ─────────────────────────────────────────────────────────────────────
 static void _sendTimeToAtmega() {
     char timeBuf[24];

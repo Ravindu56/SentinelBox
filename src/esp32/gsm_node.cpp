@@ -1,15 +1,14 @@
-// gsm_node.cpp — SIM800L on ESP32 UART0
-// GPIO26 = RX (ESP32 ← SIM800L TX)  — direct, SIM800L TX = 3.3V
-// GPIO27 = TX (ESP32 → SIM800L RX)  — 1kΩ/2kΩ voltage divider to 2.2V
+// gsm_node.cpp — SIM800L on ESP32 UART1
+// GPIO12 = RX (ESP32 ← SIM800L TX)  — direct, SIM800L TX = 3.3V
+// GPIO14 = TX (ESP32 → SIM800L RX)  — 1kΩ/2kΩ voltage divider to 2.2V
 #include "gsm_node.h"
 
-#define GSM_SERIAL_NUM  0
-#define GSM_RX_PIN      26
-#define GSM_TX_PIN      27
+// UART1 — never use UART0 (that is Serial / USB debug)
+#define GSM_RX_PIN      12
+#define GSM_TX_PIN      14
 #define GSM_BAUD        9600
 #define GSM_INIT_WAIT   1500    // ms after begin before first AT
 
-static HardwareSerial _sim(GSM_SERIAL_NUM);
 static bool     _ok      = false;
 static char     _lastLine[64] = "";
 static char     _rxBuf[64];
@@ -21,8 +20,8 @@ static bool _waitFor(const char *expect, uint16_t tMs) {
   String r;
   r.reserve(64);
   while (millis() - t0 < tMs) {
-    while (_sim.available()) {
-      r += (char)_sim.read();
+    while (Serial1.available()) {
+      r += (char)Serial1.read();
       if (r.indexOf(expect) >= 0) return true;
     }
     yield();   // keep ESP32 WiFi stack alive during wait
@@ -32,30 +31,34 @@ static bool _waitFor(const char *expect, uint16_t tMs) {
 
 // ── Internal: send command, wait for response ─────────────────────────
 static bool _cmd(const char *c, const char *expect, uint16_t tMs = 2000) {
-  while (_sim.available()) _sim.read();  // flush
-  _sim.println(c);
+  while (Serial1.available()) Serial1.read();  // flush
+  Serial1.println(c);
   return _waitFor(expect, tMs);
 }
 
 // ─────────────────────────────────────────────────────────────────────
 void GsmNode::init() {
-  _sim.begin(GSM_BAUD, SERIAL_8N1, GSM_RX_PIN, GSM_TX_PIN);
+  // Serial1 = UART1, reassigned to GPIO12(RX) / GPIO14(TX)
+  Serial1.begin(GSM_BAUD, SERIAL_8N1, GSM_RX_PIN, GSM_TX_PIN);
   delay(GSM_INIT_WAIT);
-  while (_sim.available()) _sim.read();   // flush power-on junk
+  while (Serial1.available()) Serial1.read();   // flush power-on junk
 
-  // Probe — try twice (SIM800L may need a nudge)
+  Serial.println(F("[GSM]  Probing SIM800L on UART1 GPIO12/14..."));
+
+  // Probe — try twice (SIM800L may need a nudge after power-on)
   bool alive = _cmd("AT", "OK", 3000) || _cmd("AT", "OK", 3000);
   if (!alive) {
-    Serial.println(F("[GSM] No response from SIM800L"));
-    _ok = false; return;
+    Serial.println(F("[GSM]  No response from SIM800L — check wiring/power"));
+    _ok = false;
+    return;
   }
 
-  _cmd("ATE0",       "OK", 1000);    // echo off
-  _cmd("AT+CMGF=1",  "OK", 1000);    // SMS text mode
-  _cmd("AT+CNMI=2,0,0,0,0", "OK", 1000); // suppress unsolicited SMS storage
+  _cmd("ATE0",             "OK", 1000);   // echo off
+  _cmd("AT+CMGF=1",        "OK", 1000);   // SMS text mode
+  _cmd("AT+CNMI=2,0,0,0,0","OK", 1000);  // suppress unsolicited SMS storage
 
   _ok = true;
-  Serial.println(F("[GSM] SIM800L ready"));
+  Serial.println(F("[GSM]  SIM800L ready"));
 }
 
 bool GsmNode::available() { return _ok; }
@@ -66,23 +69,23 @@ bool GsmNode::sendSMS(const char *number, const char *msg) {
 
   char buf[32];
   snprintf(buf, sizeof(buf), "AT+CMGS=\"%s\"", number);
-  _sim.println(buf);
+  Serial1.println(buf);
   if (!_waitFor(">", 5000)) return false;   // wait for prompt
 
-  _sim.print(msg);
-  _sim.write(26);           // Ctrl+Z — triggers send
+  Serial1.print(msg);
+  Serial1.write(26);         // Ctrl+Z — triggers send
   delay(100);
 
   bool sent = _waitFor("+CMGS:", 10000);
-  Serial.println(sent ? F("[GSM] SMS sent OK") : F("[GSM] SMS FAILED"));
+  Serial.println(sent ? F("[GSM]  SMS sent OK") : F("[GSM]  SMS FAILED"));
   return sent;
 }
 
 // ─────────────────────────────────────────────────────────────────────
 // Non-blocking URC reader — call every loop()
 void GsmNode::tick() {
-  while (_sim.available()) {
-    char c = _sim.read();
+  while (Serial1.available()) {
+    char c = Serial1.read();
     if (c == '\n') {
       _rxBuf[_rxIdx] = '\0';
       if (_rxIdx > 0 && _rxBuf[_rxIdx-1] == '\r') _rxBuf[--_rxIdx] = '\0';

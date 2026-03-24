@@ -31,15 +31,14 @@
 #define PIN_LED_R       7
 #define PIN_LED_G       8
 #define PIN_LED_B       9
-#define SD_CS_PIN_MEGA       53
-#define SD_CS_PIN_UNO      10    // Uno SD CS pin (also used for SIM800L on Mega)
+#define SD_CS_PIN_MEGA  53
+#define SD_CS_PIN_UNO   10    // Uno SD CS pin (also used for SIM800L on Mega)
 #define PIN_BTN_PANIC   A3
 #define PIN_WATER       A0
 #define PIN_MQ2         A1
 #define PIN_FLAME       A2
-#define PIN_BATTERY     A6    // voltage divider: 33k/10k → battery+
-#define PIN_TP_CHRG     A7  
-
+#define PIN_BATTERY     A4    // voltage divider: 33k/10k → battery+
+#define PIN_TP_CHRG     A5  
 
 #define SD_CS_PIN       SD_CS_PIN_UNO  // ATmega TX to SIM800L RX (via divider)
 

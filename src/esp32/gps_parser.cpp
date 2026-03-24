@@ -25,14 +25,19 @@ void GpsParser::coordStr(char *buf, uint8_t bufLen) {
 }
 
 // ── hasTime ──────────────────────────────────────────────────────────
-// Returns true only when TinyGPSPlus has a valid, updated date AND time
+// BUG FIX: removed isUpdated() checks.
+// TinyGPSPlus::isUpdated() returns true only once per new NMEA sentence
+// and then self-clears. When hasTime() was checked in main.cpp at the
+// 60-second interval, isUpdated() had already been consumed by an earlier
+// tick(), returning false every time — so TIME sync only fired on cold boot.
+// Correct check: isValid() alone is sufficient; main.cpp interval timer
+// controls the 60-second send rate.
 bool GpsParser::hasTime() {
-    return _gps.date.isValid() && _gps.date.isUpdated() &&
-           _gps.time.isValid() && _gps.time.isUpdated();
+    return _gps.date.isValid() && _gps.time.isValid();
 }
 
 // ── timeStr ──────────────────────────────────────────────────────────
-// Fills buf with "YYYY-MM-DDTHH:MM:SS\0"  (ISO 8601, needs ≥ 20 chars)
+// Fills buf with "YYYY-MM-DDTHH:MM:SS\0"  (ISO 8601, needs >= 20 chars)
 // Sets buf[0] = '\0' if no valid time fix is available
 void GpsParser::timeStr(char *buf, uint8_t bufLen) {
     if (!hasTime() || bufLen < 20) { buf[0] = '\0'; return; }

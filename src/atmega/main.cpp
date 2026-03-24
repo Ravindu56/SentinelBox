@@ -19,7 +19,7 @@
 
 // ── Scheduler timestamps ────────────────────────────────────────────
 static unsigned long _lastLog       = 0;
-static unsigned long _lastSms       = 0;
+// static unsigned long _lastSms       = 0;
 static unsigned long _lastHeartbeat = 0;
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -227,7 +227,7 @@ void loop() {
         float battV = Power::batteryVoltage();
         Power::batteryStatusStr(_battSt, sizeof(_battSt));
 
-        Storage::logRow(_ts, d, flags, battV, _battSt, F("0,0"));
+Storage::logRow(_ts, d, flags, battV, _battSt, "0,0");
         Storage::flush();
 
         DBG(F("[PWR]  Sleeping 30s batt=")); DBGLN(battV);
@@ -254,7 +254,7 @@ void loop() {
         float battV = Power::batteryVoltage();
         Power::batteryStatusStr(_battSt, sizeof(_battSt));
 
-        Storage::logRow(_ts, d, flags, battV, _battSt, F("0,0"));
+        Storage::logRow(_ts, d, flags, battV, _battSt, "0,0");
         Storage::flush();
 
         DBG(F("[PWR]  CRIT sleep 5min batt=")); DBGLN(battV);

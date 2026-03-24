@@ -39,8 +39,7 @@
 #define PIN_FLAME       A2
 #define PIN_BATTERY     A4    // voltage divider: 33k/10k → battery+
 #define PIN_TP_CHRG     A5  
-
-#define SD_CS_PIN       SD_CS_PIN_UNO  // ATmega TX to SIM800L RX (via divider)
+#define SD_CS_PIN     SD_CS_PIN_UNO
 
 // Note: Mega has A6/A7 as ADC-only — same as ATmega328P TQFP
 // For 28-pin DIP ATmega328P, use A4/A5 instead for battery/chrg

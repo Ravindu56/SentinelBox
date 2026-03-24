@@ -66,7 +66,7 @@ void Comms::_processLine() {
             uint8_t latLen = (uint8_t)(p1 - (_rxLine + 4));
             uint8_t lonLen = (uint8_t)(p2 - (p1 + 1));
             if (latLen > 0 && lonLen > 0 &&
-                strncmp(_rxLine + 4, F("0.000000"), 8) != 0) {
+                strncmp(_rxLine + 4, "0.000000", 8) != 0) {
                 snprintf(_gps, sizeof(_gps), "%.*s,%.*s",
                          latLen, _rxLine + 4,
                          lonLen, p1 + 1);

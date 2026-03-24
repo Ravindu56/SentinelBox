@@ -4,9 +4,9 @@
 //
 // UART allocation:
 //   UART0 (Serial)  — USB debug monitor        GPIO1 TX / GPIO3 RX
-//   UART1 (Serial1) — SIM800L GSM              GPIO14 TX / GPIO12 RX
-//   UART2 (Serial2) — NEO-6M GPS              GPIO17 TX / GPIO16 RX
-//   UnoLink         — ATmega link (Serial2 alt) GPIO5 TX / GPIO4 RX
+//   UART1 (Serial1) — SIM800L GSM              GPIO13 RX / GPIO14 TX
+//   UART2 (Serial2) — NEO-6M GPS              GPIO16 RX / GPIO17 TX
+//   UnoLink         — ATmega link              GPIO4  RX / GPIO5  TX
 //
 // Power coordination:
 //   GPIO2 (EXT0) ← ATmega D2: HIGH pulse wakes ESP32 from deep sleep
@@ -25,23 +25,23 @@
 
 #define PIN_WAKE_FROM_ATMEGA  2
 
-// ── Scheduler ─────────────────────────────────────────────────────
+// ── Scheduler ───────────────────────────────────────────────────
 static unsigned long _lastDashPush  = 0;
 static unsigned long _lastHeartbeat = 0;
 static unsigned long _lastSmsSent   = 0;
 static unsigned long _lastGpsSent   = 0;
-static unsigned long _lastGpsReport = 0;   // 1-min GPS location report
+static unsigned long _lastGpsReport = 0;
 static bool          _gsmInitDone   = false;
 
-// ── Power state ───────────────────────────────────────────────────
+// ── Power state ──────────────────────────────────────────────────
 static char _pwrState[8] = "MAINS";
 
-// ── Forward declarations ──────────────────────────────────────────────
+// ── Forward declarations ─────────────────────────────────────────────
 static void _handlePwrFrame(const char *state);
 static void _sendTimeToAtmega();
 static void _reportGpsLocation();
 
-// ── MQTT incoming command callback ────────────────────────────────────
+// ── MQTT incoming command callback ─────────────────────────────────
 void onMqttMessage(char *topic, byte *payload, unsigned int len) {
     char cmd[32];
     uint8_t l = min((unsigned int)31, len);
@@ -54,16 +54,23 @@ void onMqttMessage(char *topic, byte *payload, unsigned int len) {
 
     if (strstr(cmd, "STATUS")) {
         snprintf(reply, sizeof(reply),
-                 "T:%.1f H:%.0f W:%d G:%d GPS:%s B:%.1fV(%s) PWR:%s",
-                 t.tempC, t.humidity, t.water, t.mq2,
-                 gps, t.battV, t.battSt, _pwrState);
+                 "SentinelBox Status\n"
+                 "T:%.1fC H:%.0f%% W:%d G:%d F:%d V:%d\n"
+                 "Batt:%.1fV(%s) PWR:%s\n"
+                 "GPS:%s",
+                 t.tempC, t.humidity, t.water, t.mq2, t.flame, t.vib,
+                 t.battV, t.battSt, _pwrState, gps);
         WifiMqtt::publish(MQTT_TOPIC_EVT, reply);
         if (GsmNode::available())
             GsmNode::sendSMS(SMS_NUMBER_1, reply);
 
     } else if (strstr(cmd, "LOCATION")) {
         snprintf(reply, sizeof(reply),
-                 "GPS:%s maps.google.com/?q=%s", gps, gps);
+                 "SentinelBox Location\n"
+                 "GPS:%s\n"
+                 "Map:maps.google.com/?q=%s\n"
+                 "Sats:%u PWR:%s",
+                 gps, gps, GpsParser::sats(), _pwrState);
         WifiMqtt::publish(MQTT_TOPIC_EVT, reply);
         if (GsmNode::available())
             GsmNode::sendSMS(SMS_NUMBER_1, reply);
@@ -88,7 +95,7 @@ void setup() {
     Serial.println(F("\n[ESP32] BlackBox utility node booting..."));
 
     GpsParser::init();    // UART2: GPIO16 RX / GPIO17 TX — NEO-6M @ 9600
-    UnoLink::init();      // UART using GPIO4 RX / GPIO5 TX — ATmega @ 115200
+    UnoLink::init();      // UART1: GPIO4  RX / GPIO5  TX — ATmega @ 115200
     WifiMqtt::init();
     WifiMqtt::setCallback(onMqttMessage);
     WebDash::init();
@@ -109,15 +116,15 @@ void setup() {
 // LOOP
 // ─────────────────────────────────────────────────────────────────────
 void loop() {
-    // ── Deferred GSM init — 3s after boot so Serial is stable ────────
+    // ── Deferred GSM init — 3s after boot so Serial is stable ────
     if (!_gsmInitDone && millis() >= 3000UL) {
         _gsmInitDone = true;
-        GsmNode::init();   // UART1: GPIO12 RX / GPIO14 TX — SIM800L @ 9600
+        GsmNode::init();   // UART1: GPIO13 RX / GPIO14 TX — SIM800L @ 9600
         Serial.printf("[GSM]  %s\n",
             GsmNode::available() ? "SIM800L ready" : "Not found — SMS disabled");
     }
 
-    // ── Non-blocking module ticks ────────────────────────────────
+    // ── Non-blocking module ticks ───────────────────────────
     GpsParser::tick();
     UnoLink::tick();
     GsmNode::tick();
@@ -126,8 +133,9 @@ void loop() {
 
     unsigned long now = millis();
     char gps[32]; GpsParser::coordStr(gps, sizeof(gps));
+    const TelData &tel = UnoLink::telemetry();
 
-    // ── Power coordination frames from ATmega ─────────────────────
+    // ── Power coordination frames from ATmega ──────────────────
     if (UnoLink::sleepRequested()) {
         UnoLink::clearSleepRequest();
         Serial.println(F("[PWR]  ATmega requested deep sleep — entering now"));
@@ -145,20 +153,19 @@ void loop() {
         UnoLink::clearPwrState();
     }
 
-    // ── Send GPS time to ATmega every 60s when locked ─────────────
+    // ── Send GPS time to ATmega every 60s when locked ──────────
     if (GpsParser::hasTime() && (now - _lastGpsSent >= 60000UL)) {
         _lastGpsSent = now;
         _sendTimeToAtmega();
     }
 
-    // ── 1-minute GPS location report → Serial + SMS both numbers ────
+    // ── 1-minute GPS + sensor report → Serial + SMS both numbers ──
     if (now - _lastGpsReport >= 60000UL) {
         _lastGpsReport = now;
         _reportGpsLocation();
     }
 
-    // ── New telemetry frame from ATmega ──────────────────────────
-    const TelData &tel = UnoLink::telemetry();
+    // ── New telemetry frame from ATmega ─────────────────────
     if (tel.fresh) {
         char json[300];
         snprintf(json, sizeof(json),
@@ -176,13 +183,19 @@ void loop() {
         UnoLink::sendAck();
     }
 
-    // ── Hazard event from ATmega ──────────────────────────────
+    // ── Hazard event from ATmega ─────────────────────────
     const char *evt = UnoLink::lastEvent();
     if (evt[0] != '\0') {
-        char payload[160];
+        // ── MQTT event payload (JSON)
+        char payload[200];
         snprintf(payload, sizeof(payload),
-                 "{\"event\":\"%s\",\"gps\":\"%s\",\"pwr\":\"%s\"}",
-                 evt, gps, _pwrState);
+                 "{\"event\":\"%s\",\"t\":%.1f,\"h\":%.0f,"
+                 "\"w\":%d,\"g\":%d,\"f\":%d,\"v\":%d,"
+                 "\"bv\":%.2f,\"bs\":\"%s\","
+                 "\"gps\":\"%s\",\"pwr\":\"%s\"}",
+                 evt, tel.tempC, tel.humidity,
+                 tel.water, tel.mq2, tel.flame, tel.vib,
+                 tel.battV, tel.battSt, gps, _pwrState);
         WifiMqtt::publish(MQTT_TOPIC_EVT, payload);
 
         bool isCritical = (strstr(evt, "NORMAL") == nullptr);
@@ -190,97 +203,131 @@ void loop() {
         bool cooldownOk = (now - _lastSmsSent) >= SMS_COOLDOWN_MS;
 
         if (GsmNode::available() && isCritical && (cooldownOk || isPanic)) {
+            // ── Full sensor + location disaster SMS ──────────────
             char sms[160];
             snprintf(sms, sizeof(sms),
-                     "%sALERT:%s T:%.1fC H:%.0f%% GPS:%s B:%.1fV "
-                     "MAP:maps.google.com/?q=%s",
+                     "%sALERT: %s\n"
+                     "T:%.1fC H:%.0f%% W:%d\n"
+                     "Gas:%d Flame:%d Vib:%d\n"
+                     "Batt:%.1fV(%s) %s\n"
+                     "GPS:%s\n"
+                     "Map:maps.google.com/?q=%s",
                      isPanic ? "[PANIC] " : "",
-                     evt, tel.tempC, tel.humidity,
-                     gps, tel.battV, gps);
-            if (GsmNode::sendSMS(SMS_NUMBER_1, sms)) {
-                GsmNode::sendSMS(SMS_NUMBER_2, sms);
-                if (!isPanic) _lastSmsSent = now;
-                Serial.println(isPanic
-                    ? F("[GSM]  PANIC SMS sent to both numbers")
-                    : F("[GSM]  Alert SMS sent to both numbers"));
-            }
+                     evt,
+                     tel.tempC, tel.humidity, tel.water,
+                     tel.mq2, tel.flame, tel.vib,
+                     tel.battV, tel.battSt, _pwrState,
+                     gps, gps);
+
+            // Send to BOTH numbers independently — don't gate #2 on #1 result
+            bool s1 = GsmNode::sendSMS(SMS_NUMBER_1, sms);
+            bool s2 = GsmNode::sendSMS(SMS_NUMBER_2, sms);
+
+            Serial.printf("[GSM]  %s SMS — #1:%s #2:%s\n",
+                isPanic ? "PANIC" : "Alert",
+                s1 ? "OK" : "FAIL", s2 ? "OK" : "FAIL");
+
+            if (!isPanic) _lastSmsSent = now;
         }
         UnoLink::clearEvent();
     }
 
-    // ── Incoming SMS command handler ───────────────────────────
+    // ── Incoming SMS command handler ──────────────────────
     const char *gsmLine = GsmNode::lastLine();
     if (gsmLine[0] != '\0') {
         if (strstr(gsmLine, "STATUS")) {
             char reply[160];
             snprintf(reply, sizeof(reply),
-                     "STATUS T:%.1f H:%.0f W:%d G:%d F:%d GPS:%s B:%.1fV(%s) PWR:%s",
+                     "SentinelBox Status\n"
+                     "Time:%s\n"
+                     "T:%.1fC H:%.0f%% W:%d\n"
+                     "Gas:%d Flame:%d Vib:%d\n"
+                     "Batt:%.1fV(%s) %s\n"
+                     "GPS:%s",
+                     tel.ts,
                      tel.tempC, tel.humidity, tel.water,
-                     tel.mq2, tel.flame, gps, tel.battV, tel.battSt,
-                     _pwrState);
+                     tel.mq2, tel.flame, tel.vib,
+                     tel.battV, tel.battSt, _pwrState,
+                     gps);
             GsmNode::sendSMS(SMS_NUMBER_1, reply);
 
         } else if (strstr(gsmLine, "LOCATION")) {
-            char reply[100];
+            char reply[120];
             snprintf(reply, sizeof(reply),
-                     "LOC:%s maps.google.com/?q=%s", gps, gps);
+                     "SentinelBox Location\n"
+                     "GPS:%s\n"
+                     "Map:maps.google.com/?q=%s\n"
+                     "Sats:%u PWR:%s",
+                     gps, gps, GpsParser::sats(), _pwrState);
             GsmNode::sendSMS(SMS_NUMBER_1, reply);
 
         } else if (strstr(gsmLine, "BATT")) {
             char reply[80];
             snprintf(reply, sizeof(reply),
-                     "BATTERY %.2fV (%s) Mode:%s",
+                     "Battery: %.2fV (%s)\nMode: %s",
                      tel.battV, tel.battSt, _pwrState);
             GsmNode::sendSMS(SMS_NUMBER_1, reply);
         }
         GsmNode::clearLastLine();
     }
 
-    // ── Web dashboard SSE push every 2s ─────────────────────────
+    // ── Web dashboard SSE push every 2s ────────────────────
     if (now - _lastDashPush >= 2000UL) {
         _lastDashPush = now;
         WebDash::pushUpdate(tel, gps, GpsParser::sats());
     }
 
-    // ── Hourly heartbeat SMS ───────────────────────────────────
+    // ── Hourly heartbeat SMS — full sensor snapshot ────────────
     if (now - _lastHeartbeat >= HEARTBEAT_MS) {
         _lastHeartbeat = now;
         if (GsmNode::available()) {
             char hb[160];
             snprintf(hb, sizeof(hb),
-                     "HB:%s GPS:%s B:%.1fV(%s) PWR:%s WiFi:%s MQTT:%s",
-                     tel.ts, gps, tel.battV, tel.battSt, _pwrState,
+                     "SentinelBox HB\n"
+                     "Time:%s\n"
+                     "T:%.1fC H:%.0f%% W:%d\n"
+                     "Gas:%d Flame:%d\n"
+                     "Batt:%.1fV(%s) %s\n"
+                     "WiFi:%s MQTT:%s Sats:%u\n"
+                     "GPS:%s",
+                     tel.ts,
+                     tel.tempC, tel.humidity, tel.water,
+                     tel.mq2, tel.flame,
+                     tel.battV, tel.battSt, _pwrState,
                      WifiMqtt::wifiConnected() ? "OK" : "FAIL",
-                     WifiMqtt::mqttConnected() ? "OK" : "FAIL");
+                     WifiMqtt::mqttConnected() ? "OK" : "FAIL",
+                     GpsParser::sats(), gps);
             GsmNode::sendSMS(SMS_NUMBER_1, hb);
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// _reportGpsLocation — every 60s: print to Serial + SMS both numbers
+// _reportGpsLocation — every 60s: Serial print + SMS with sensor data
 // ─────────────────────────────────────────────────────────────────────
 static void _reportGpsLocation() {
     char gps[32]; GpsParser::coordStr(gps, sizeof(gps));
     uint8_t sats = GpsParser::sats();
     bool    lock = GpsParser::valid();
+    const TelData &tel = UnoLink::telemetry();
 
+    // ── Serial monitor print ─────────────────────────────────
     Serial.println(F("─────────────────────────────────────"));
-    Serial.print(F("[GPS]  Location report @ "));
-    Serial.print(millis() / 1000); Serial.println(F("s uptime"));
+    Serial.print(F("[RPT]  @ ")); Serial.print(millis()/1000); Serial.println(F("s"));
+    Serial.printf("[RPT]  T:%.1fC H:%.0f%% W:%d Gas:%d Flame:%d Vib:%d\n",
+                  tel.tempC, tel.humidity, tel.water, tel.mq2, tel.flame, tel.vib);
+    Serial.printf("[RPT]  Batt:%.1fV(%s) PWR:%s\n",
+                  tel.battV, tel.battSt, _pwrState);
     if (lock) {
-        Serial.print(F("[GPS]  Coords : ")); Serial.println(gps);
-        Serial.print(F("[GPS]  Sats   : ")); Serial.println(sats);
-        Serial.print(F("[GPS]  Map    : https://maps.google.com/?q="));
-        Serial.println(gps);
+        Serial.printf("[GPS]  %s  Sats:%u\n", gps, sats);
+        Serial.printf("[GPS]  Map: https://maps.google.com/?q=%s\n", gps);
     } else {
-        Serial.println(F("[GPS]  No fix — waiting for satellite lock"));
-        Serial.print(F("[GPS]  Sats visible: ")); Serial.println(sats);
+        Serial.printf("[GPS]  No fix  Sats visible:%u\n", sats);
     }
     Serial.println(F("─────────────────────────────────────"));
 
     if (!GsmNode::available()) {
-        Serial.println(F("[GPS]  SMS skipped — GSM not available"));
+        Serial.println(F("[GSM]  SMS skipped — GSM not available"));
         return;
     }
     if (!lock) {
@@ -288,18 +335,24 @@ static void _reportGpsLocation() {
         return;
     }
 
+    // ── SMS with full sensor snapshot + location ───────────────
     char sms[160];
     snprintf(sms, sizeof(sms),
-             "SentinelBox Location:\n"
-             "GPS: %s\n"
-             "Map: maps.google.com/?q=%s\n"
-             "Sats: %u  PWR: %s",
-             gps, gps, sats, _pwrState);
+             "SentinelBox Report\n"
+             "T:%.1fC H:%.0f%% W:%d\n"
+             "Gas:%d Flame:%d Vib:%d\n"
+             "Batt:%.1fV(%s) %s\n"
+             "GPS:%s Sats:%u\n"
+             "Map:maps.google.com/?q=%s",
+             tel.tempC, tel.humidity, tel.water,
+             tel.mq2, tel.flame, tel.vib,
+             tel.battV, tel.battSt, _pwrState,
+             gps, sats, gps);
 
     bool sent1 = GsmNode::sendSMS(SMS_NUMBER_1, sms);
     bool sent2 = GsmNode::sendSMS(SMS_NUMBER_2, sms);
-    Serial.printf("[GPS]  SMS to %s : %s\n", SMS_NUMBER_1, sent1 ? "OK" : "FAIL");
-    Serial.printf("[GPS]  SMS to %s : %s\n", SMS_NUMBER_2, sent2 ? "OK" : "FAIL");
+    Serial.printf("[GPS]  SMS — #1:%s  #2:%s\n",
+                  sent1 ? "OK" : "FAIL", sent2 ? "OK" : "FAIL");
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -316,11 +369,16 @@ static void _handlePwrFrame(const char *state) {
 
     if (strcmp(state, "CRIT") == 0 && GsmNode::available()) {
         const TelData &t = UnoLink::telemetry();
+        char gps[32]; GpsParser::coordStr(gps, sizeof(gps));
         char sms[120];
         snprintf(sms, sizeof(sms),
-                 "WARNING: SentinelBox battery critical (%.2fV). "
-                 "Device entering long-sleep mode.", t.battV);
+                 "WARNING: SentinelBox battery critical\n"
+                 "Voltage: %.2fV\n"
+                 "GPS:%s\n"
+                 "Device entering long-sleep mode.",
+                 t.battV, gps);
         GsmNode::sendSMS(SMS_NUMBER_1, sms);
+        GsmNode::sendSMS(SMS_NUMBER_2, sms);
     }
 }
 

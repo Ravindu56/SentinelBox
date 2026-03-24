@@ -138,20 +138,16 @@ void loop() {
     char gps[32]; GpsParser::coordStr(gps, sizeof(gps));
 
     // ── Power coordination frames from ATmega ─────────────────────
-    // UnoLink::tick() sets these flags when ATmega sends SLEEP/WAKE/PWR
     if (UnoLink::sleepRequested()) {
         UnoLink::clearSleepRequest();
         Serial.println(F("[PWR]  ATmega requested deep sleep — entering now"));
         Serial.flush();
-        // Flush MQTT before sleeping
         if (WifiMqtt::mqttConnected()) {
             WifiMqtt::publish("blackbox/power",
                               "{\"pwr\":\"SLEEPING\"}");
             delay(100);
         }
-        // Enter deep sleep — only GPIO2 EXT0 HIGH can wake us
         esp_deep_sleep_start();
-        // Execution never reaches here after this call
     }
 
     const char *pwrFrame = UnoLink::lastPwrState();
@@ -161,7 +157,6 @@ void loop() {
     }
 
     // ── Send GPS time to ATmega when GPS lock is fresh ─────────────
-    // Sends TIME,YYYY-MM-DDTHH:MM:SS once per minute
     if (GpsParser::hasTime() && (now - _lastGpsSent >= 60000UL)) {
         _lastGpsSent = now;
         _sendTimeToAtmega();
@@ -170,20 +165,22 @@ void loop() {
     // ── New telemetry frame from ATmega ───────────────────────────
     const TelData &tel = UnoLink::telemetry();
     if (tel.fresh) {
-        char json[280];
+        // ── Build telemetry JSON — includes panic field ────────────
+        char json[300];
         snprintf(json, sizeof(json),
             "{\"ts\":\"%s\",\"t\":%.1f,\"h\":%.0f,"
             "\"w\":%d,\"g\":%d,\"f\":%d,\"v\":%d,"
+            "\"panic\":%d,"
             "\"flags\":%u,\"bv\":%.2f,\"bs\":\"%s\","
             "\"gps\":\"%s\",\"sats\":%u,\"pwr\":\"%s\"}",
             tel.ts, tel.tempC, tel.humidity,
             tel.water, tel.mq2, tel.flame, tel.vib,
+            tel.panic,
             tel.flags, tel.battV, tel.battSt,
             gps, GpsParser::sats(), _pwrState);
         WifiMqtt::publish(MQTT_TOPIC_TEL, json);
 
-        // ACK back to ATmega — lets it know we are alive
-        // ATmega's Comms::esp32Responsive() uses this
+        // ACK back to ATmega
         UnoLink::sendAck();
     }
 
@@ -196,20 +193,27 @@ void loop() {
                  evt, gps, _pwrState);
         WifiMqtt::publish(MQTT_TOPIC_EVT, payload);
 
-        bool isCritical = (strstr(evt, "NORMAL") == nullptr);
-        bool cooldownOk = (now - _lastSmsSent) >= SMS_COOLDOWN_MS;
+        bool isCritical   = (strstr(evt, "NORMAL") == nullptr);
+        bool isPanic      = (strstr(evt, "PANIC")  != nullptr);
+        bool cooldownOk   = (now - _lastSmsSent) >= SMS_COOLDOWN_MS;
 
-        if (GsmNode::available() && isCritical && cooldownOk) {
+        // ── PANIC bypasses the SMS cooldown — always send immediately
+        if (GsmNode::available() && isCritical && (cooldownOk || isPanic)) {
             char sms[160];
             snprintf(sms, sizeof(sms),
-                     "ALERT:%s T:%.1fC H:%.0f%% GPS:%s B:%.1fV "
+                     "%sALERT:%s T:%.1fC H:%.0f%% GPS:%s B:%.1fV "
                      "MAP:maps.google.com/?q=%s",
+                     isPanic ? "[PANIC] " : "",
                      evt, tel.tempC, tel.humidity,
                      gps, tel.battV, gps);
             if (GsmNode::sendSMS(SMS_NUMBER_1, sms)) {
                 GsmNode::sendSMS(SMS_NUMBER_2, sms);
-                _lastSmsSent = now;
-                Serial.println(F("[GSM] Alert SMS sent to both numbers"));
+                // Only update cooldown timer for non-panic events
+                // so repeated panic presses still send each time
+                if (!isPanic) _lastSmsSent = now;
+                Serial.println(isPanic
+                    ? F("[GSM] PANIC SMS sent to both numbers")
+                    : F("[GSM] Alert SMS sent to both numbers"));
             }
         }
 
@@ -272,14 +276,12 @@ static void _handlePwrFrame(const char *state) {
     strlcpy(_pwrState, state, sizeof(_pwrState));
     Serial.print(F("[PWR]  State from ATmega: ")); Serial.println(state);
 
-    // Publish power state change to MQTT
     char payload[48];
     snprintf(payload, sizeof(payload), "{\"pwr\":\"%s\"}", state);
     if (WifiMqtt::mqttConnected()) {
         WifiMqtt::publish("blackbox/power", payload);
     }
 
-    // On CRIT — send SMS warning (once)
     if (strcmp(state, "CRIT") == 0 && GsmNode::available()) {
         const TelData &t = UnoLink::telemetry();
         char sms[120];
@@ -297,7 +299,7 @@ static void _handlePwrFrame(const char *state) {
 // ─────────────────────────────────────────────────────────────────────
 static void _sendTimeToAtmega() {
     char timeBuf[24];
-    GpsParser::timeStr(timeBuf, sizeof(timeBuf));  // "YYYY-MM-DDTHH:MM:SS"
+    GpsParser::timeStr(timeBuf, sizeof(timeBuf));
     if (timeBuf[0] == '\0') return;
     char frame[32];
     snprintf(frame, sizeof(frame), "TIME,%s", timeBuf);

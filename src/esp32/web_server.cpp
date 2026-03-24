@@ -11,7 +11,9 @@ static const char DASH_HTML[] PROGMEM = R"==(
 <title>BlackBox Live</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d1117;color:#c9d1d9;font-family:Arial,sans-serif;padding:12px}
+body{background:#0d1117;color:#c9d1d9;font-family:Arial,sans-serif;padding:12px;transition:background .3s}
+body.panic-active{background:#3d0000;animation:panic-flash 0.6s infinite alternate}
+@keyframes panic-flash{from{background:#3d0000}to{background:#1a0000}}
 h1{color:#58a6ff;text-align:center;font-size:1.3em;margin-bottom:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;text-align:center}
@@ -20,10 +22,12 @@ h1{color:#58a6ff;text-align:center;font-size:1.3em;margin-bottom:12px}
 .alert .val{color:#f85149}
 .warn  .val{color:#d29922}
 #ab{background:#f85149;border-radius:6px;padding:8px;text-align:center;display:none;margin:8px 0;font-weight:700}
+#pb{background:#ff0000;border:3px solid #ff6b6b;border-radius:6px;padding:10px;text-align:center;display:none;margin:8px 0;font-weight:700;font-size:1.1em;animation:panic-flash 0.6s infinite alternate}
 #ts{text-align:center;color:#484f58;font-size:.75em;margin:6px}
 a{color:#58a6ff}
 </style></head><body>
 <h1>&#127968; Disaster BlackBox</h1>
+<div id='pb'>&#128680; PANIC BUTTON PRESSED &#128680;</div>
 <div id='ab'><span id='ft'></span></div>
 <div class='grid'>
 <div class='card' id='ct'><div class='val' id='tmp'>--</div><div class='lbl'>&#127777; Temp &deg;C</div></div>
@@ -32,6 +36,7 @@ a{color:#58a6ff}
 <div class='card' id='cg'><div class='val' id='gas'>--</div><div class='lbl'>&#128168; Gas MQ-2</div></div>
 <div class='card' id='cf'><div class='val' id='flm'>--</div><div class='lbl'>&#128293; Flame</div></div>
 <div class='card' id='cv'><div class='val' id='vib'>--</div><div class='lbl'>&#128246; Vibration</div></div>
+<div class='card' id='cpk'><div class='val' id='pnk'>--</div><div class='lbl'>&#128680; Panic Btn</div></div>
 <div class='card'><div class='val' id='bat'>--</div><div class='lbl'>&#128267; Battery V</div></div>
 <div class='card'><div class='val' id='sat'>--</div><div class='lbl'>&#128752; GPS Sats</div></div>
 </div>
@@ -51,9 +56,17 @@ es.addEventListener('d',e=>{
   document.getElementById('sat').innerText=d.s;
   document.getElementById('tm').innerText=d.ts;
   document.getElementById('mp').href='https://maps.google.com/?q='+d.la+','+d.lo;
+  // Panic button indicator
+  const panicActive=parseInt(d.pk)===1;
+  document.getElementById('pnk').innerText=panicActive?'PRESSED&#128680;':'OK';
+  document.getElementById('cpk').className=panicActive?'card alert':'card';
+  document.getElementById('pb').style.display=panicActive?'block':'none';
+  document.body.className=panicActive?'panic-active':'';
+  // General hazard banner
   const ab=document.getElementById('ab');
-  if(d.fl!=='NORMAL'&&d.fl!==''){ab.style.display='block';document.getElementById('ft').innerText=d.fl;}
-  else ab.style.display='none';
+  if(d.fl!=='NORMAL'&&d.fl!==''&&!panicActive){ab.style.display='block';document.getElementById('ft').innerText=d.fl;}
+  else if(!panicActive) ab.style.display='none';
+  // Card alert colouring
   ['ct','ch','cw','cg','cf','cv'].forEach(id=>document.getElementById(id).className='card');
   if(parseFloat(d.t)>55)document.getElementById('ct').className='card alert';
   if(parseInt(d.w)>400) document.getElementById('cw').className='card alert';
@@ -88,15 +101,17 @@ void WebDash::pushUpdate(const TelData &tel, const char *gpsCoords, uint8_t sats
     strlcpy(lon, comma + 1, sizeof(lon));
   }
 
-  // Build compact JSON (no String, no heap alloc)
-  char json[220];
+  // Build compact JSON — includes panic field (pk)
+  char json[240];
   snprintf(json, sizeof(json),
     "{\"ts\":\"%s\",\"t\":%.1f,\"h\":%.0f,"
     "\"w\":%d,\"g\":%d,\"f\":%d,\"v\":%d,"
+    "\"pk\":%d,"
     "\"fl\":\"%s\",\"bv\":%.2f,\"bs\":\"%s\","
     "\"la\":\"%s\",\"lo\":\"%s\",\"s\":%u}",
     tel.ts, tel.tempC, tel.humidity,
     tel.water, tel.mq2, tel.flame, tel.vib,
+    tel.panic,
     tel.flags != 0 ? "HAZARD" : "NORMAL",
     tel.battV, tel.battSt,
     lat, lon, sats);
